@@ -8,11 +8,11 @@ from sqlalchemy import and_, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from agent.alice import AlicePlanner
-from agent.prompts import build_system_prompt
-from agent.tools import AgentTools
-from models import AgentSession, Event, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Visibility, Zone
-from schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
+from .alice import AlicePlanner
+from .prompts import build_system_prompt
+from .tools import AgentTools
+from ..models import AgentSession, Event, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Visibility, Zone
+from ..schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
 
 
 MAX_SESSION_MESSAGES = 20

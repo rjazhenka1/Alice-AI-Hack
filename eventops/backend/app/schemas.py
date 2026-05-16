@@ -11,7 +11,7 @@ EventOps AI — Pydantic schemas (OpenAPI contract)
 from datetime import datetime
 from typing import Any, Optional
 from pydantic import BaseModel, Field
-from models import (
+from .models import (
     StaffStatus, TicketPriority, TicketStatus,
     TicketType, Visibility
 )
