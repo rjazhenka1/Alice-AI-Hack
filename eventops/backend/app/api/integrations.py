@@ -2,7 +2,9 @@ import base64
 import logging
 import os
 import re
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
 import httpx
@@ -13,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..agent.alice import SpeechKitClient
 from ..agent.router import handle_command
 from ..database import get_db
-from ..models import Message, Staff
+from ..models import KnowledgeBaseLink, Message, Staff, Ticket, Visibility
 from ..notifier import enqueue_notification
+from ..rag import index_document_chunks
+from .common import ticket_visibility_filter
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 TELEGRAM_API_URL = "https://api.telegram.org"
@@ -55,6 +59,10 @@ def _voice_storage_dir() -> Path:
     return Path(os.getenv("TELEGRAM_VOICE_DIR", "storage/telegram_voice"))
 
 
+def _document_storage_dir() -> Path:
+    return Path("storage/documents")
+
+
 def _extension_from_file_path(file_path: str | None) -> str:
     if not file_path:
         return ".oga"
@@ -63,6 +71,26 @@ def _extension_from_file_path(file_path: str | None) -> str:
 
 def _safe_filename_part(value: Any) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]", "_", str(value))
+
+
+def _extract_ticket_id(caption: str | None) -> int | None:
+    if not caption:
+        return None
+    match = re.search(r"(?:ticket|тикет|задач[аеиу]?|#)\s*#?(\d+)", caption, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _is_kb_caption(caption: str | None) -> bool:
+    normalized = (caption or "").lower()
+    return any(marker in normalized for marker in ("kb", "knowledge", "база знаний", "бз"))
+
+
+def _caption_title(caption: str | None, fallback: str) -> str:
+    if not caption:
+        return fallback
+    cleaned = re.sub(r"(?:ticket|тикет|задач[аеиу]?|#)\s*#?\d+", "", caption, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:kb|knowledge|база знаний|бз)\b", "", cleaned, flags=re.IGNORECASE)
+    return " ".join(cleaned.split()) or fallback
 
 
 async def _get_telegram_file_path(
@@ -97,6 +125,16 @@ async def _download_telegram_file(
     destination.write_bytes(response.content)
 
 
+async def _download_telegram_file_bytes(
+    client: httpx.AsyncClient,
+    token: str,
+    file_path: str,
+) -> bytes:
+    response = await client.get(f"{TELEGRAM_FILE_URL}/bot{token}/{file_path}")
+    response.raise_for_status()
+    return response.content
+
+
 async def _save_telegram_voice(
     voice: dict[str, Any],
     staff: Staff,
@@ -124,6 +162,175 @@ async def _save_telegram_voice(
             destination,
         )
         return destination
+
+
+async def _download_telegram_document_payload(
+    payload: dict[str, Any],
+    staff: Staff,
+    telegram_message: dict[str, Any],
+    *,
+    default_filename: str,
+) -> tuple[Path, bytes, str, str | None]:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
+
+    file_id = payload.get("file_id")
+    if not file_id:
+        raise RuntimeError("Telegram document/photo payload did not include file_id")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        file_path = await _get_telegram_file_path(client, token, file_id)
+        content = await _download_telegram_file_bytes(client, token, file_path)
+
+    filename = _safe_filename_part(payload.get("file_name") or Path(file_path).name or default_filename)
+    message_id = _safe_filename_part(telegram_message.get("message_id", "unknown"))
+    destination = _document_storage_dir() / str(staff.event_id) / "telegram" / f"{staff.id}_{message_id}_{filename}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(content)
+    return destination, content, filename, payload.get("mime_type")
+
+
+async def _load_visible_ticket_for_staff(db: AsyncSession, staff: Staff, ticket_id: int) -> Ticket | None:
+    visible_clause = await ticket_visibility_filter(db, staff)
+    return await db.scalar(
+        select(Ticket)
+        .where(Ticket.event_id == staff.event_id, Ticket.id == ticket_id)
+        .where(visible_clause)
+    )
+
+
+async def _attach_telegram_document_to_ticket(
+    db: AsyncSession,
+    *,
+    staff: Staff,
+    ticket_id: int,
+    title: str,
+    filename: str,
+    content_type: str | None,
+    path: Path,
+    content: bytes,
+) -> str:
+    ticket = await _load_visible_ticket_for_staff(db, staff, ticket_id)
+    if ticket is None:
+        return f"Не нашла доступный тикет #{ticket_id}. Проверь номер задачи."
+
+    document_id = uuid4().hex
+    document = {
+        "id": document_id,
+        "title": title,
+        "filename": filename,
+        "content_type": content_type,
+        "size": len(content),
+        "path": str(path),
+        "uploaded_by_id": staff.id,
+        "created_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+    }
+    ticket.documents = [*ticket.documents, document]
+    await index_document_chunks(
+        db,
+        event_id=staff.event_id,
+        content=content,
+        source_title=title,
+        source_url=str(path),
+        ticket_id=ticket.id,
+        metadata={"filename": filename, "content_type": content_type, "source": "telegram"},
+    )
+    await db.commit()
+    return f"Прикрепила документ к задаче #{ticket.id}: {title}"
+
+
+async def _upload_telegram_document_to_kb(
+    db: AsyncSession,
+    *,
+    staff: Staff,
+    title: str,
+    filename: str,
+    content_type: str | None,
+    path: Path,
+    content: bytes,
+) -> str:
+    if not staff.is_admin:
+        return "Загружать документы в базу знаний может только организатор."
+
+    link = KnowledgeBaseLink(
+        event_id=staff.event_id,
+        title=title,
+        url=str(path),
+        description=f"Telegram upload: {filename}",
+        tags=["telegram"],
+        is_active=True,
+        visibility=Visibility.public,
+    )
+    db.add(link)
+    await db.flush()
+    chunks = await index_document_chunks(
+        db,
+        event_id=staff.event_id,
+        content=content,
+        source_title=link.title,
+        source_url=link.url,
+        knowledge_base_link_id=link.id,
+        metadata={"filename": filename, "content_type": content_type, "source": "telegram"},
+    )
+    await db.commit()
+    return f"Загрузила документ в базу знаний: {title}. Чанков: {chunks}."
+
+
+def _largest_photo(photos: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not photos:
+        return None
+    return max(photos, key=lambda item: int(item.get("file_size") or 0))
+
+
+async def _handle_telegram_document(
+    db: AsyncSession,
+    *,
+    staff: Staff,
+    telegram_message: dict[str, Any],
+) -> str:
+    caption = telegram_message.get("caption")
+    document = telegram_message.get("document")
+    photos = telegram_message.get("photo") or []
+    photo = _largest_photo(photos) if isinstance(photos, list) else None
+    payload = document or photo
+    if not payload:
+        return "Не нашла файл в сообщении."
+
+    default_filename = "photo.jpg" if photo else "document"
+    path, content, filename, content_type = await _download_telegram_document_payload(
+        payload,
+        staff,
+        telegram_message,
+        default_filename=default_filename,
+    )
+    title = _caption_title(caption, filename)
+
+    ticket_id = _extract_ticket_id(caption)
+    if ticket_id is not None:
+        return await _attach_telegram_document_to_ticket(
+            db,
+            staff=staff,
+            ticket_id=ticket_id,
+            title=title,
+            filename=filename,
+            content_type=content_type,
+            path=path,
+            content=content,
+        )
+
+    if _is_kb_caption(caption):
+        return await _upload_telegram_document_to_kb(
+            db,
+            staff=staff,
+            title=title,
+            filename=filename,
+            content_type=content_type,
+            path=path,
+            content=content,
+        )
+
+    return "Файл получила. Подпиши его `ticket #123 ...`, чтобы прикрепить к задаче, или `kb ...`, чтобы загрузить в базу знаний."
 
 
 def _voice_message_content(voice: dict[str, Any], file_path: Path) -> str:
@@ -166,11 +373,13 @@ async def telegram_webhook(
     telegram_message = update.get("message") or update.get("edited_message") or {}
     text = telegram_message.get("text")
     voice = telegram_message.get("voice")
+    document = telegram_message.get("document")
+    photo = telegram_message.get("photo")
     sender = telegram_message.get("from") or {}
     chat = telegram_message.get("chat") or {}
     telegram_id = sender.get("id")
 
-    if (not text and not voice) or telegram_id is None:
+    if (not text and not voice and not document and not photo) or telegram_id is None:
         return {"ok": True}
 
     staff = await _find_staff_by_telegram(db, str(telegram_id))
@@ -208,6 +417,14 @@ async def telegram_webhook(
         except Exception:
             logger.exception("Failed to answer Telegram voice via Alice: telegram_id=%s", telegram_id)
             reply = f"Распознала голосовое: {transcribed_text}\nНо не смогла получить ответ Алисы."
+    elif document or photo:
+        try:
+            reply = await _handle_telegram_document(db, staff=staff, telegram_message=telegram_message)
+            await _store_incoming_message(db, staff, f"[document] {reply}")
+        except Exception:
+            logger.exception("Failed to process Telegram document/photo: telegram_id=%s", telegram_id)
+            await db.rollback()
+            return {"ok": True}
     else:
         await _store_incoming_message(db, staff, str(text))
         try:

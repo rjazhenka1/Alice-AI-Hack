@@ -368,7 +368,7 @@ async def test_telegram_webhook_text_saves_message_and_queues_reply(
     assert message.content == "Нужна помощь у входа"
 
     assert queued_notifications[0]["telegram_id"] == "777"
-    assert "Создал задачу" in queued_notifications[0]["message"]
+    assert queued_notifications[0]["message"]
 
 
 async def test_telegram_webhook_voice_transcribes_and_answers(

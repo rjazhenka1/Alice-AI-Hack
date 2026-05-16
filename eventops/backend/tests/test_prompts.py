@@ -57,12 +57,14 @@ def test_build_system_prompt_injects_dynamic_sections_and_contract() -> None:
 
     # Key contract snippets
     assert "=== КОНТРАКТ ВЫХОДА (СТРОГО ОДИН JSON, БЕЗ ТЕКСТА ВОКРУГ) ===" in prompt
-    assert '"kind": "operational | clarification | informational | answered"' in prompt
+    assert '"kind": "operational | clarification | informational | knowledge_base | answered"' in prompt
     assert '"target": "create | respond | change_status | null"' in prompt
     assert "=== RAG-ОРКЕСТРАЦИЯ (ПСЕВДОКОД, API НЕИЗВЕСТЕН) ===" in prompt
-    assert "Для informational (ТОЛЬКО KB-RAG):" in prompt
+    assert "Для knowledge_base (ТОЛЬКО KB-RAG):" in prompt
     assert "`rag.search_docs(keywords)`" in prompt
-    assert "Для НЕ informational (operational/respond/change_status/clarification при разборе сущностей):" in prompt
+    assert "Для informational:" in prompt
+    assert "Не вызывать KB-RAG." in prompt
+    assert "Для НЕ informational и НЕ knowledge_base (operational/respond/change_status/clarification при разборе сущностей):" in prompt
     assert "`rag.search_people(...)`" in prompt
     assert "`rag.search_roles(...)`" in prompt
     assert "=== БЕЗОПАСНОСТЬ ===" in prompt
@@ -71,7 +73,7 @@ def test_build_system_prompt_injects_dynamic_sections_and_contract() -> None:
     assert "=== FEW-SHOT (ОСНОВНОЙ РОУТИНГ) ===" in prompt
     assert "Пример 1 (create + цели по именам):" in prompt
     assert "Пример 3b (create + сущность-роль):" in prompt
-    assert "Пример 7 (answered):" in prompt
+    assert "Пример 8 (answered):" in prompt
 
 
 def test_build_rag_entity_disambiguation_prompt_contains_rules_and_few_shots() -> None:
@@ -94,8 +96,8 @@ def test_build_rag_entity_disambiguation_prompt_contains_rules_and_few_shots() -
 def test_build_rag_informational_synthesis_prompt_contains_contract_and_few_shot() -> None:
     prompt = build_rag_informational_synthesis_prompt()
 
-    assert "Ты формируешь финальный informational-ответ по вопросу координатора." in prompt
-    assert '"kind": "informational"' in prompt
+    assert "Ты формируешь финальный knowledge_base-ответ по вопросу координатора." in prompt
+    assert '"kind": "knowledge_base"' in prompt
     assert '"answer": "краткий точный ответ"' in prompt
     assert "1) Используй только факты из rag_fragments." in prompt
     assert "2) Если данных недостаточно/нет — не выдумывай" in prompt
@@ -106,7 +108,7 @@ def test_build_rag_informational_synthesis_prompt_contains_contract_and_few_shot
     assert "Few-shot:" in prompt
     assert 'user_question: "Где туалет рядом с 331?"' in prompt
     assert "Источник: admin://map/floor-3" in prompt
-    assert '{"kind":"informational","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3)."' in prompt
+    assert '{"kind":"knowledge_base","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3)."' in prompt
 
 
 def test_build_knowledge_capture_prompt_contains_schema_and_examples() -> None:

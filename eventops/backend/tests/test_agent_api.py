@@ -47,6 +47,8 @@ async def setup_alice_env():
             return PlannedCommand(kind="imprecise", message="Формулировка расплывчата")
         if "что происходит" in lowered or "что сейчас" in lowered:
             return PlannedCommand(kind="informational", message="Собираю сводку")
+        if "компьютерное зрение" in lowered:
+            return PlannedCommand(kind="knowledge_base", message="Ищу в базе знаний", keywords=["Компьютерное зрение"])
         if "ну ты поняла" in lowered:
             return PlannedCommand(kind="answered", message="Не понял задачу")
         if "нужны люди" in lowered:
@@ -225,3 +227,75 @@ async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session
     assert "Закрытое решение жюри" not in prompt
     assert "Решения жюри" in prompt
     assert "Не раскрывать до публикации" in prompt
+
+
+@pytest.mark.asyncio
+async def test_informational_command_searches_document_chunks(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    from app.models import DocumentChunk
+
+    db_session.add(
+        DocumentChunk(
+            event_id=event_id,
+            content="31. Компьютерное зрение 3 з.е. отлично",
+            source_title="Учебная справка",
+            source_url="storage/documents/test.jpg",
+            chunk_index=0,
+        )
+    )
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Есть ли в базе знаний дисциплина Компьютерное зрение?"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "answered"
+    assert "Компьютерное зрение" in response.message
+    assert "Учебная справка" in response.message
+
+
+def test_kb_answer_does_not_return_unrelated_vector_matches():
+    from app.agent.router import _format_kb_search_answer
+
+    answer = _format_kb_search_answer(
+        [
+            {
+                "source_title": "kb_test2",
+                "source_url": "storage/documents/test.jpg",
+                "content": "31. Компьютерное зрение 3 з.е. отлично",
+            },
+            {
+                "source_title": "kb_1txt",
+                "source_url": "storage/documents/test.txt",
+                "content": "1:0,72:72:99:2031,0 1:0,60:60:99:1509,0",
+            },
+        ],
+        "А что есть про Максима Альжанова?",
+    )
+
+    assert answer == "В базе знаний сейчас не нашла точной информации по этому запросу."
+    assert "Компьютерное зрение" not in answer
+
+
+@pytest.mark.asyncio
+async def test_ticket_summary_query_uses_tickets_not_knowledge(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    db_session.add(Ticket(event_id=event_id, title="Доставка удлинителей", status=TicketStatus.waiting))
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Какие актуальные задачи сейчас?"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "answered"
+    assert "Актуальные задачи" in response.message
+    assert "Доставка удлинителей" in response.message
+    assert "базе знаний" not in response.message
