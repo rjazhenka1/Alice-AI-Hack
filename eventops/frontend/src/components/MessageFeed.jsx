@@ -30,13 +30,13 @@ export default function MessageFeed({ error, isLoading, messages, onMarkRead, on
         onSubmit={submit}
       >
         <textarea
-          className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-600"
+          className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
           placeholder="Сообщение всем участникам"
           value={content}
           onChange={(event) => setContent(event.target.value)}
         />
         <button
-          className="h-10 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+          className="h-10 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
           disabled={!content.trim()}
           type="submit"
         >
@@ -55,7 +55,7 @@ export default function MessageFeed({ error, isLoading, messages, onMarkRead, on
           className={`rounded-lg border p-4 shadow-sm ${
             message.is_read
               ? "border-slate-200 bg-white"
-              : "border-teal-200 bg-teal-50"
+              : "border-violet-200 bg-violet-50"
           }`}
           key={message.id}
         >

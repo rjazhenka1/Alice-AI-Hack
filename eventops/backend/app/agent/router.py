@@ -51,6 +51,33 @@ def _trim_context(context: list[dict[str, str]]) -> list[dict[str, str]]:
     return context[-MAX_SESSION_MESSAGES:]
 
 
+def _message_record(*, role: str, text: str, audio_file: str | None = None, source: str | None = None) -> dict[str, str]:
+    record = {"role": role, "text": text}
+    if audio_file:
+        record["audio_file"] = audio_file
+    if source:
+        record["source"] = source
+    return record
+
+
+def _normalize_client_context(context: list[dict[str, Any]]) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for item in context[-MAX_SESSION_MESSAGES:]:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        messages.append(
+            _message_record(
+                role=role,
+                text=text,
+                audio_file=str(item["audio_file"]) if item.get("audio_file") else None,
+                source=str(item["source"]) if item.get("source") else None,
+            )
+        )
+    return messages
+
+
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
 
@@ -512,11 +539,23 @@ async def handle_command(
     event_id: int,
     current_staff: Staff,
     text: str,
+    source: str | None = None,
+    audio_file: str | None = None,
+    client_context: list[dict[str, Any]] | None = None,
+    mode: str = "command",
 ) -> AgentCommandResponse:
     response_author, response_author_role = await _response_author(db, current_staff)
+    mode = mode if mode in {"command", "chat", "ticket_question"} else "command"
+    if mode == "command" and not current_staff.is_admin:
+        mode = "chat"
+
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
-    context = list(session.context or [])
-    context.append({"role": "user", "text": text})
+    context = (
+        _normalize_client_context(client_context)
+        if client_context is not None
+        else list(session.context or [])
+    )
+    context.append(_message_record(role="user", text=text, audio_file=audio_file, source=source))
 
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)
     planner = AlicePlanner()
@@ -546,8 +585,16 @@ async def handle_command(
         recent_dialogue=_trim_context(context[:-1]),
     )
 
+    if mode != "command":
+        system_prompt += (
+            "\n\nТекущий режим: справочный чат участника, не операционная команда координатора. "
+            "Запрещено создавать тикеты, назначать людей или предлагать tool-действия. "
+            "Отвечай только по видимому контексту мероприятия, базе знаний и видимым тикетам. "
+            "Если точного ответа нет, верни kind=clarification и коротко скажи, что вопрос нужно передать администратору."
+        )
+
     completion_query = _extract_completion_query(text)
-    if completion_query is not None:
+    if mode == "command" and completion_query is not None:
         tickets_result = await db.execute(
             select(Ticket)
             .where(Ticket.event_id == event_id)
@@ -619,6 +666,44 @@ async def handle_command(
         system_prompt=system_prompt,
         planned=planned,
     )
+
+    if mode != "command":
+        if planned.kind == "informational":
+            response = await _build_ticket_summary_response(
+                db,
+                event_id=event_id,
+                visible_clause=visible_clause,
+                response_author=response_author,
+                response_author_role=response_author_role,
+            )
+        elif planned.kind in {"answered", "clarification"}:
+            response = AgentCommandResponse(
+                action="question_asked" if planned.kind == "clarification" else "answered",
+                message=planned.message,
+                model_response=planned.message,
+                author=response_author,
+                author_role=response_author_role,
+            )
+        else:
+            message = (
+                "Не нашла точный ответ в базе знаний. "
+                "Передай вопрос администратору в обсуждении задачи."
+                if mode == "ticket_question"
+                else "Не нашла точный ответ в базе знаний. Передала вопрос администратору."
+            )
+            response = AgentCommandResponse(
+                action="question_asked",
+                message=message,
+                model_response=message,
+                author=response_author,
+                author_role=response_author_role,
+            )
+
+        response = _finalize_response(response)
+        context.append({"role": "assistant", "text": response.model_response or response.message})
+        session.context = _trim_context(context)
+        await db.commit()
+        return response
 
     if planned.kind == "clarification":
         response = AgentCommandResponse(

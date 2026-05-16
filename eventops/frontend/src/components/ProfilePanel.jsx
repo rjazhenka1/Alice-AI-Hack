@@ -5,7 +5,14 @@ const statusLabels = {
   offline: "Оффлайн",
 };
 
-export default function ProfilePanel({ context, currentStaff, event, onLogout }) {
+export default function ProfilePanel({
+  context,
+  currentStaff,
+  event,
+  onLogout,
+  onVoiceAlertsChange,
+  voiceAlertsEnabled,
+}) {
   const myTickets = context?.my_tickets || [];
   const myMessages = context?.my_messages || [];
   const isAdmin = currentStaff?.isAdmin || currentStaff?.is_admin;
@@ -73,6 +80,32 @@ export default function ProfilePanel({ context, currentStaff, event, onLogout })
             {ticket.title}
           </p>
         ))}
+      </section>
+
+      <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">
+              Оповещения Алисы
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Голосовые уведомления о новых задачах и важных ответах.
+            </p>
+          </div>
+          <button
+            className={`h-8 w-14 rounded-full p-1 transition ${
+              voiceAlertsEnabled ? "bg-violet-700" : "bg-slate-300"
+            }`}
+            type="button"
+            onClick={() => onVoiceAlertsChange(!voiceAlertsEnabled)}
+          >
+            <span
+              className={`block h-6 w-6 rounded-full bg-white transition ${
+                voiceAlertsEnabled ? "translate-x-6" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
       </section>
 
       <button

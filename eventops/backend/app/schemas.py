@@ -356,6 +356,19 @@ class AgentCommandRequest(BaseModel):
     """
     text:          Optional[str]  = Field(None, examples=["На регистрации очередь, нужны люди"])
     audio_base64:  Optional[str]  = None  # base64-encoded audio
+    audio_mime_type: Optional[str] = Field(
+        None,
+        description="MIME type исходной записи браузера, например audio/webm;codecs=opus",
+    )
+    mode:          str = Field(
+        "command",
+        pattern=r"^(command|chat|ticket_question)$",
+        description=(
+            "command — операционная команда координатора с возможным созданием тикетов; "
+            "chat — справочный чат без создания тикетов; "
+            "ticket_question — вопрос внутри обсуждения тикета без создания новых тикетов."
+        ),
+    )
     context:       Optional[list[AgentContextMessage]] = Field(
         None,
         max_length=20,
@@ -368,6 +381,10 @@ class TranscriptionRequest(BaseModel):
 
     audio_base64: str = Field(..., min_length=1, description="Base64-encoded audio payload")
     language: str = Field("ru-RU", description="Язык распознавания")
+    audio_mime_type: Optional[str] = Field(
+        None,
+        description="MIME type исходной записи, например audio/webm;codecs=opus",
+    )
 
 
 class TranscriptionResponse(BaseModel):
@@ -403,8 +420,9 @@ class AgentCommandResponse(BaseModel):
     action:      str
     message:     str                      # текст ответа Алисы для UI
     model_response: Optional[str]         = None  # полный текст ответа модели (источник для TTS)
+    transcript:  Optional[str]            = None  # распознанный текст входного голосового
     author:      Optional[StaffAuthor]    = None
-    author_role: Optional[str]            = None
+    author_role: Optional[RoleShort | str] = None
     audio:       Optional[AudioSynthesis] = None
     suggestion:  Optional[AiSuggestion]  = None
     ticket:      Optional[Ticket]        = None

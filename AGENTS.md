@@ -235,6 +235,8 @@ POST   /events/{id}/agent/confirm       body: AgentConfirmRequest → Ticket
 
 `AgentCommandRequest.context` — опциональная предыстория до 20 сообщений. Если фронт передаёт
 `context`, бэкенд использует его вместо сохранённой session-памяти текущего пользователя для этого запроса.
+Для голосовых команд фронт передаёт `audio_base64` и `audio_mime_type` (например `audio/webm;codecs=opus`);
+бэкенд сохраняет исходник, при необходимости конвертирует браузерный WebM/MP4 в `oggopus` и отправляет в SpeechKit.
 
 ---
 

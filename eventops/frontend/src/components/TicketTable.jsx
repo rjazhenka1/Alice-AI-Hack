@@ -1,4 +1,22 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import AliceResponse from "./AliceResponse.jsx";
+import CommandBar from "./CommandBar.jsx";
+
+const audioTypes = [
+  "audio/ogg;codecs=opus",
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+];
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onloadend = () => resolve(reader.result.split(",")[1]);
+    reader.readAsDataURL(blob);
+  });
+}
 
 const priorityStyles = {
   low: "bg-slate-100 text-slate-600",
@@ -13,6 +31,22 @@ const statusLabels = {
   waiting: "Ожидает",
   resolved: "Решён",
   closed: "Закрыт",
+};
+
+const statusOrder = {
+  new: 0,
+  waiting: 1,
+  in_progress: 2,
+  resolved: 3,
+  closed: 4,
+};
+
+const statusStyles = {
+  new: "border-slate-200 bg-white",
+  in_progress: "border-sky-200 bg-sky-50",
+  waiting: "border-amber-200 bg-amber-50",
+  resolved: "border-emerald-200 bg-emerald-50",
+  closed: "border-slate-200 bg-slate-50",
 };
 
 const statusOptions = [
@@ -30,50 +64,43 @@ const responseOptions = [
 ];
 
 export default function TicketTable({
+  agentError,
+  agentResponse,
+  isAgentLoading = false,
+  isConfirming = false,
   error,
   filters,
   isLoading,
   mode = "admin",
-  onCreate,
   onFilterChange,
+  onAgentConfirm,
+  onAgentReject,
+  onCommandSubmit,
+  onReply,
   onQuestion,
+  onThreadOpen,
   onStatusChange,
+  replies = {},
   staff,
   tickets,
 }) {
   const [assignments, setAssignments] = useState({});
-  const [form, setForm] = useState({
-    title: "",
-    description: "",
-    priority: "medium",
-    type: "incident",
-    visibility: "public",
-  });
   const [openQuestionTicketId, setOpenQuestionTicketId] = useState(null);
+  const [openThreadTicketId, setOpenThreadTicketId] = useState(null);
+  const [questionAnswers, setQuestionAnswers] = useState({});
+  const [recordingTicketId, setRecordingTicketId] = useState(null);
+  const [recordingThreadTicketId, setRecordingThreadTicketId] = useState(null);
   const [questions, setQuestions] = useState({});
+  const [threadVoiceStatus, setThreadVoiceStatus] = useState({});
+  const [threadReplies, setThreadReplies] = useState({});
+  const chunksRef = useRef([]);
+  const onThreadOpenRef = useRef(onThreadOpen);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
 
-  const submit = (event) => {
-    event.preventDefault();
-
-    if (!form.title.trim()) {
-      return;
-    }
-
-    onCreate({
-      title: form.title.trim(),
-      description: form.description.trim() || null,
-      priority: form.priority,
-      type: form.type,
-      visibility: form.visibility,
-    });
-    setForm({
-      title: "",
-      description: "",
-      priority: "medium",
-      type: "incident",
-      visibility: "public",
-    });
-  };
+  useEffect(() => {
+    onThreadOpenRef.current = onThreadOpen;
+  }, [onThreadOpen]);
 
   const toggleAssignee = (ticketId, staffId) => {
     setAssignments((items) => {
@@ -89,7 +116,167 @@ export default function TicketTable({
     });
   };
 
-  const sendQuestion = (event, ticket) => {
+  const stopQuestionRecording = () => {
+    recorderRef.current?.stop();
+  };
+
+  const stopThreadRecording = () => {
+    recorderRef.current?.stop();
+  };
+
+  const startThreadVoiceReply = async (ticket) => {
+    if (!window.isSecureContext) {
+      setThreadVoiceStatus((items) => ({
+        ...items,
+        [ticket.id]: "Голосовой ответ требует localhost или HTTPS.",
+      }));
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setThreadVoiceStatus((items) => ({
+        ...items,
+        [ticket.id]: "Запись аудио не поддерживается этим браузером.",
+      }));
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = audioTypes.find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      );
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+
+      chunksRef.current = [];
+      recorderRef.current = recorder;
+      streamRef.current = stream;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        setRecordingThreadTicketId(null);
+        stream.getTracks().forEach((track) => track.stop());
+
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        const audioBase64 = await blobToBase64(blob);
+        setThreadVoiceStatus((items) => ({
+          ...items,
+          [ticket.id]: "Распознаю голосовой ответ...",
+        }));
+        await onReply(ticket, "Голосовой ответ", {
+          audioBase64,
+          mimeType: blob.type,
+        });
+        setThreadVoiceStatus((items) => ({
+          ...items,
+          [ticket.id]: "Ответ отправлен.",
+        }));
+        setOpenThreadTicketId(ticket.id);
+      };
+
+      recorder.start();
+      setRecordingThreadTicketId(ticket.id);
+      setThreadVoiceStatus((items) => ({
+        ...items,
+        [ticket.id]: "Идёт запись ответа.",
+      }));
+    } catch (error) {
+      setRecordingThreadTicketId(null);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      setThreadVoiceStatus((items) => ({
+        ...items,
+        [ticket.id]:
+          error.name === "NotAllowedError"
+            ? "Браузер не дал доступ к микрофону."
+            : "Не удалось начать запись ответа.",
+      }));
+    }
+  };
+
+  const startQuestionVoiceInput = async (ticket) => {
+    if (!window.isSecureContext) {
+      setQuestionAnswers((items) => ({
+        ...items,
+        [ticket.id]: "Голосовой ввод требует localhost или HTTPS.",
+      }));
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setQuestionAnswers((items) => ({
+        ...items,
+        [ticket.id]: "Запись аудио не поддерживается этим браузером.",
+      }));
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = audioTypes.find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      );
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+
+      chunksRef.current = [];
+      recorderRef.current = recorder;
+      streamRef.current = stream;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        setRecordingTicketId(null);
+        stream.getTracks().forEach((track) => track.stop());
+
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        const audioBase64 = await blobToBase64(blob);
+        setQuestionAnswers((items) => ({
+          ...items,
+          [ticket.id]: "Алиса слушает голосовой вопрос...",
+        }));
+        const answer = await onQuestion(ticket, "Голосовой вопрос", {
+          audioBase64,
+          mimeType: blob.type,
+        });
+        setQuestionAnswers((items) => ({
+          ...items,
+          [ticket.id]: answer || "Передала вопрос администратору.",
+        }));
+        setOpenThreadTicketId(ticket.id);
+      };
+
+      recorder.start();
+      setRecordingTicketId(ticket.id);
+      setQuestionAnswers((items) => ({
+        ...items,
+        [ticket.id]: "Идёт запись вопроса.",
+      }));
+    } catch (error) {
+      setRecordingTicketId(null);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      setQuestionAnswers((items) => ({
+        ...items,
+        [ticket.id]:
+          error.name === "NotAllowedError"
+            ? "Браузер не дал доступ к микрофону."
+            : "Не удалось начать запись вопроса.",
+      }));
+    }
+  };
+
+  const sendQuestion = async (event, ticket) => {
     event.preventDefault();
     const content = (questions[ticket.id] || "").trim();
 
@@ -97,84 +284,102 @@ export default function TicketTable({
       return;
     }
 
-    onQuestion(ticket, content);
+    setQuestionAnswers((items) => ({ ...items, [ticket.id]: "Алиса проверяет базу знаний..." }));
+    const answer = await onQuestion(ticket, content);
+    setQuestionAnswers((items) => ({
+      ...items,
+      [ticket.id]: answer || "Передала вопрос администратору.",
+    }));
     setQuestions((items) => ({ ...items, [ticket.id]: "" }));
     setOpenQuestionTicketId(null);
+    setOpenThreadTicketId(ticket.id);
   };
+
+  const sendThreadReply = async (event, ticket) => {
+    event.preventDefault();
+    const content = (threadReplies[ticket.id] || "").trim();
+
+    if (!content) {
+      return;
+    }
+
+    await onReply(ticket, content);
+    setThreadReplies((items) => ({ ...items, [ticket.id]: "" }));
+    setOpenThreadTicketId(ticket.id);
+  };
+
+  const toggleThread = (ticketId) => {
+    const nextId = openThreadTicketId === ticketId ? null : ticketId;
+    setOpenThreadTicketId(nextId);
+    if (nextId) {
+      onThreadOpen?.(nextId);
+    }
+  };
+
+  useEffect(() => {
+    if (!openThreadTicketId) {
+      return undefined;
+    }
+
+    onThreadOpenRef.current?.(openThreadTicketId);
+    const timer = window.setInterval(() => {
+      onThreadOpenRef.current?.(openThreadTicketId);
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [openThreadTicketId]);
+
+  const personName = (staffId, fallback = "Участник") =>
+    staff.find((person) => person.id === staffId)?.name || fallback;
 
   if (isLoading && tickets.length === 0) {
     return <p className="text-sm text-slate-500">Загружаем тикеты...</p>;
   }
 
+  const visibleTickets =
+    mode === "admin" && filters.status
+      ? tickets.filter((ticket) => ticket.status === filters.status)
+      : tickets;
+  const orderedTickets = visibleTickets
+    .map((ticket, index) => ({ index, ticket }))
+    .sort((left, right) => {
+      const leftOrder = statusOrder[left.ticket.status] ?? 99;
+      const rightOrder = statusOrder[right.ticket.status] ?? 99;
+
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+
+      return left.index - right.index;
+    })
+    .map((item) => item.ticket);
+
   return (
     <div className="space-y-4">
       {mode === "admin" ? (
-        <form
-          className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
-          onSubmit={submit}
-        >
-          <h2 className="text-sm font-semibold text-slate-950">Новый тикет</h2>
-          <input
-            className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
-            placeholder="На регистрации очередь"
-            value={form.title}
-            onChange={(event) =>
-              setForm((state) => ({ ...state, title: event.target.value }))
-            }
+        <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-950">Новая команда</h2>
+          <CommandBar
+            disabled={isAgentLoading || isConfirming}
+            onSubmit={onCommandSubmit}
           />
-          <textarea
-            className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-600"
-            placeholder="Детали для исполнителей"
-            value={form.description}
-            onChange={(event) =>
-              setForm((state) => ({ ...state, description: event.target.value }))
-            }
+          {isAgentLoading ? (
+            <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">
+              Алиса разбирает команду...
+            </p>
+          ) : null}
+          {agentError ? (
+            <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+              {agentError}
+            </p>
+          ) : null}
+          <AliceResponse
+            isConfirming={isConfirming}
+            response={agentResponse}
+            onConfirm={onAgentConfirm}
+            onReject={onAgentReject}
           />
-          <div className="grid grid-cols-3 gap-2">
-            <select
-              className="h-10 min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-xs outline-none focus:border-teal-600"
-              value={form.type}
-              onChange={(event) =>
-                setForm((state) => ({ ...state, type: event.target.value }))
-              }
-            >
-              <option value="incident">Инцидент</option>
-              <option value="planned">План</option>
-              <option value="tech">Тех</option>
-              <option value="question">Вопрос</option>
-            </select>
-            <select
-              className="h-10 min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-xs outline-none focus:border-teal-600"
-              value={form.priority}
-              onChange={(event) =>
-                setForm((state) => ({ ...state, priority: event.target.value }))
-              }
-            >
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="critical">critical</option>
-            </select>
-            <select
-              className="h-10 min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-xs outline-none focus:border-teal-600"
-              value={form.visibility}
-              onChange={(event) =>
-                setForm((state) => ({ ...state, visibility: event.target.value }))
-              }
-            >
-              <option value="public">public</option>
-              <option value="role_only">role</option>
-              <option value="confidential">conf.</option>
-            </select>
-          </div>
-          <button
-            className="h-11 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
-            disabled={!form.title.trim()}
-            type="submit"
-          >
-            Создать тикет
-          </button>
-        </form>
+        </section>
       ) : null}
 
       {mode === "admin" ? (
@@ -183,7 +388,7 @@ export default function TicketTable({
             <button
               className={`h-9 shrink-0 rounded-full px-3 text-xs font-medium ${
                 filters.status === option.value
-                  ? "bg-slate-950 text-white"
+                  ? "bg-violet-700 text-white"
                   : "bg-slate-100 text-slate-600"
               }`}
               key={option.value}
@@ -206,12 +411,14 @@ export default function TicketTable({
         </section>
       ) : null}
 
-      {tickets.map((ticket) => {
+      {orderedTickets.map((ticket) => {
         const selectedStaff = assignments[ticket.id] || [];
 
         return (
         <article
-          className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+          className={`rounded-lg border p-4 shadow-sm ${
+            statusStyles[ticket.status] || statusStyles.new
+          }`}
           key={ticket.id}
         >
           <div className="flex items-start justify-between gap-3">
@@ -219,7 +426,7 @@ export default function TicketTable({
               <h2 className="text-sm font-semibold text-slate-950">
                 {ticket.title}
               </h2>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs font-medium text-slate-500">
                 {statusLabels[ticket.status] || ticket.status}
               </p>
             </div>
@@ -246,12 +453,90 @@ export default function TicketTable({
             </p>
           ) : null}
 
+          <button
+            className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700"
+            type="button"
+            onClick={() => toggleThread(ticket.id)}
+          >
+            {openThreadTicketId === ticket.id ? "Скрыть обсуждение" : "Обсуждение"}
+            {(replies[ticket.id] || []).length > 0 ? ` · ${replies[ticket.id].length}` : ""}
+          </button>
+
+          {openThreadTicketId === ticket.id ? (
+            <section className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+              {(replies[ticket.id] || []).length > 0 ? (
+                replies[ticket.id].map((reply) => (
+                  <div
+                    className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700"
+                    key={reply.id}
+                  >
+                    <div className="mb-1 font-semibold text-slate-900">
+                      {reply.sender?.name || personName(reply.from_staff_id)}
+                    </div>
+                    <div className="whitespace-pre-line">{reply.content}</div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-xs text-slate-500">Сообщений по задаче пока нет.</p>
+              )}
+              {mode === "admin" ? (
+                <div className="space-y-2">
+                  <form className="space-y-2" onSubmit={(event) => sendThreadReply(event, ticket)}>
+                    <input
+                      className="h-10 w-full min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                      placeholder="Ответ по задаче"
+                      value={threadReplies[ticket.id] || ""}
+                      onChange={(event) =>
+                        setThreadReplies((items) => ({
+                          ...items,
+                          [ticket.id]: event.target.value,
+                        }))
+                      }
+                    />
+                    <div className="grid grid-cols-[1fr_104px] gap-2">
+                      <button
+                        className={`h-11 rounded-lg text-sm font-semibold text-white ${
+                          recordingThreadTicketId === ticket.id
+                            ? "bg-red-600"
+                            : "bg-violet-700"
+                        } disabled:opacity-60`}
+                        disabled={recordingThreadTicketId !== null && recordingThreadTicketId !== ticket.id}
+                        type="button"
+                        onClick={() =>
+                          recordingThreadTicketId === ticket.id
+                            ? stopThreadRecording()
+                            : startThreadVoiceReply(ticket)
+                        }
+                      >
+                        {recordingThreadTicketId === ticket.id ? "Стоп" : "Голос"}
+                      </button>
+                      <button
+                        className="h-11 rounded-lg border border-violet-200 bg-white text-xs font-semibold text-violet-700 disabled:opacity-60"
+                        disabled={!(threadReplies[ticket.id] || "").trim()}
+                        type="submit"
+                      >
+                        Ответить
+                      </button>
+                    </div>
+                  </form>
+                  {threadVoiceStatus[ticket.id] ? (
+                    <p className="text-xs text-slate-500">{threadVoiceStatus[ticket.id]}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           {mode === "volunteer" ? (
             <>
               <div className="mt-4 grid grid-cols-3 gap-2">
                 {responseOptions.map((option) => (
                   <button
-                    className="h-10 rounded-lg border border-slate-300 text-xs font-medium text-slate-700"
+                    className={`h-10 rounded-lg border text-xs font-medium ${
+                      ticket.status === option.status
+                        ? "border-violet-700 bg-violet-700 text-white"
+                        : "border-slate-300 bg-white text-slate-700"
+                    }`}
                     key={option.status}
                     type="button"
                     onClick={() => {
@@ -272,7 +557,7 @@ export default function TicketTable({
               {openQuestionTicketId === ticket.id ? (
                 <form className="mt-3 space-y-2" onSubmit={(event) => sendQuestion(event, ticket)}>
                   <textarea
-                    className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-600"
+                    className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
                     placeholder="Что нужно уточнить?"
                     value={questions[ticket.id] || ""}
                     onChange={(event) =>
@@ -282,14 +567,37 @@ export default function TicketTable({
                       }))
                     }
                   />
-                  <button
-                    className="h-10 w-full rounded-lg bg-slate-950 text-xs font-semibold text-white disabled:opacity-60"
-                    disabled={!(questions[ticket.id] || "").trim()}
-                    type="submit"
-                  >
-                    Отправить вопрос
-                  </button>
+                  <div className="grid grid-cols-[1fr_120px] gap-2">
+                    <button
+                      className={`h-11 rounded-lg text-sm font-semibold text-white ${
+                        recordingTicketId === ticket.id
+                          ? "bg-red-600"
+                          : "bg-violet-700"
+                      } disabled:opacity-60`}
+                      disabled={recordingTicketId !== null && recordingTicketId !== ticket.id}
+                      type="button"
+                      onClick={() =>
+                        recordingTicketId === ticket.id
+                          ? stopQuestionRecording()
+                          : startQuestionVoiceInput(ticket)
+                      }
+                    >
+                      {recordingTicketId === ticket.id ? "Стоп" : "Голос"}
+                    </button>
+                    <button
+                      className="h-11 rounded-lg border border-violet-200 bg-white px-2 text-xs font-semibold text-violet-700 disabled:opacity-60"
+                      disabled={!(questions[ticket.id] || "").trim()}
+                      type="submit"
+                    >
+                      Отправить вопрос
+                    </button>
+                  </div>
                 </form>
+              ) : null}
+              {questionAnswers[ticket.id] ? (
+                <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs text-violet-800">
+                  {questionAnswers[ticket.id]}
+                </div>
               ) : null}
             </>
           ) : (
@@ -322,7 +630,7 @@ export default function TicketTable({
                     <button
                       className={`rounded-full px-3 py-1 text-xs font-medium ${
                         selectedStaff.includes(person.id)
-                          ? "bg-teal-700 text-white"
+                          ? "bg-violet-700 text-white"
                           : "bg-slate-100 text-slate-600"
                       }`}
                       key={person.id}
@@ -334,7 +642,7 @@ export default function TicketTable({
                   ))}
                 </div>
                 <button
-                  className="h-10 w-full rounded-lg bg-slate-950 text-xs font-semibold text-white disabled:opacity-60"
+                  className="h-10 w-full rounded-lg bg-violet-700 text-xs font-semibold text-white disabled:opacity-60"
                   disabled={selectedStaff.length === 0}
                   type="button"
                   onClick={() => onStatusChange(ticket.id, null, selectedStaff)}

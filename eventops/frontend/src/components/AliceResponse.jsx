@@ -12,8 +12,8 @@ export default function AliceResponse({
   const suggestedStaffIds = response.suggestion?.suggested_staff_ids || [];
 
   return (
-    <section className="rounded-lg border border-teal-200 bg-teal-50 p-4">
-      <p className="text-xs font-semibold uppercase text-teal-700">Алиса</p>
+    <section className="rounded-lg border border-violet-200 bg-violet-50 p-4">
+      <p className="text-xs font-semibold uppercase text-violet-700">Алиса</p>
       <p className="mt-2 text-sm text-slate-900">{response.message}</p>
 
       {response.suggestion?.reasoning ? (
@@ -31,7 +31,7 @@ export default function AliceResponse({
       {ticketId ? (
         <div className="mt-4 grid grid-cols-2 gap-2">
           <button
-            className="h-11 rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+            className="h-11 rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
             disabled={isConfirming}
             type="button"
             onClick={() => onConfirm(ticketId, suggestedStaffIds)}

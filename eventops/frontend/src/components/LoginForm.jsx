@@ -19,12 +19,12 @@ export default function LoginForm({
   };
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center bg-white px-4 py-8 text-slate-950">
-      <p className="text-xs font-semibold uppercase text-teal-700">EventOps AI</p>
+    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center bg-[#fbfaff] px-4 py-8 text-slate-950">
+      <p className="text-xs font-semibold uppercase text-violet-700">EventOps AI</p>
       <h1 className="mt-2 text-2xl font-semibold">Вход в штаб</h1>
       <div className="mt-6 grid gap-3">
         <button
-          className="h-12 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+          className="h-12 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
           disabled={isLoading}
           type="button"
           onClick={onDemoAdmin}
@@ -45,7 +45,7 @@ export default function LoginForm({
         <label className="block text-sm font-medium text-slate-700">
           Telegram ID
           <input
-            className="mt-2 h-12 w-full rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-teal-600"
+            className="mt-2 h-12 w-full rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-violet-600"
             inputMode="numeric"
             placeholder="123456789"
             value={telegramId}
@@ -54,7 +54,7 @@ export default function LoginForm({
         </label>
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <button
-          className="h-12 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+          className="h-12 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
           disabled={isLoading || !telegramId.trim()}
           type="submit"
         >

@@ -12,6 +12,18 @@ const emptyRole = {
   can_see_confidential: false,
 };
 const emptyZone = { name: "", description: "" };
+const emptyKnowledgeLink = {
+  title: "",
+  url: "",
+  description: "",
+  tags: "",
+  visibility: "public",
+};
+const emptyConfidentialityRule = {
+  category: "",
+  description: "",
+  severity: "medium",
+};
 const emptyStaff = {
   name: "",
   telegram_id: "",
@@ -21,6 +33,18 @@ const emptyStaff = {
   is_admin: false,
 };
 
+const visibilityOptions = [
+  { value: "public", label: "Все" },
+  { value: "role_only", label: "Роли" },
+  { value: "confidential", label: "Закрыто" },
+];
+
+const severityOptions = [
+  { value: "low", label: "Низкая" },
+  { value: "medium", label: "Средняя" },
+  { value: "high", label: "Высокая" },
+];
+
 function nullable(value) {
   const next = value.trim();
   return next ? next : null;
@@ -28,6 +52,13 @@ function nullable(value) {
 
 function toOptionalId(value) {
   return value ? Number(value) : null;
+}
+
+function parseTags(value) {
+  return value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 }
 
 function Section({ children, title }) {
@@ -41,10 +72,15 @@ function Section({ children, title }) {
 
 export default function EventSetup({ event, onChanged, onEventCreated, staff }) {
   const [catalogError, setCatalogError] = useState("");
+  const [confidentialityRules, setConfidentialityRules] = useState([]);
   const [eventForm, setEventForm] = useState(emptyEvent);
   const [formError, setFormError] = useState("");
+  const [importText, setImportText] = useState("");
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [knowledgeForm, setKnowledgeForm] = useState(emptyKnowledgeLink);
+  const [knowledgeItems, setKnowledgeItems] = useState([]);
+  const [ruleForm, setRuleForm] = useState(emptyConfidentialityRule);
   const [roleForm, setRoleForm] = useState(emptyRole);
   const [roles, setRoles] = useState([]);
   const [success, setSuccess] = useState("");
@@ -56,6 +92,8 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
     if (!event?.id) {
       setRoles([]);
       setZones([]);
+      setKnowledgeItems([]);
+      setConfidentialityRules([]);
       return;
     }
 
@@ -63,11 +101,18 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
     setCatalogError("");
     setIsLoadingCatalog(true);
 
-    Promise.all([api.getRoles(event.id), api.getZones(event.id)])
-      .then(([roleItems, zoneItems]) => {
+    Promise.all([
+      api.getRoles(event.id),
+      api.getZones(event.id),
+      api.getKnowledge(event.id),
+      api.getConfidentialityRules(event.id).catch(() => []),
+    ])
+      .then(([roleItems, zoneItems, knowledge, rules]) => {
         if (isActive) {
           setRoles(roleItems);
           setZones(zoneItems);
+          setKnowledgeItems(knowledge);
+          setConfidentialityRules(rules);
         }
       })
       .catch((error) => {
@@ -177,6 +222,98 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
     }, "Сотрудник добавлен");
   };
 
+  const addKnowledgeFile = (changeEvent) => {
+    const files = Array.from(changeEvent.target.files || []);
+
+    if (!event?.id || files.length === 0) {
+      changeEvent.target.value = "";
+      return;
+    }
+
+    save(async () => {
+      const created = [];
+
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("title", file.name);
+        formData.append("visibility", "public");
+        formData.append("is_active", "true");
+        created.push(await api.uploadKnowledgeDocument(event.id, formData));
+      }
+
+      setKnowledgeItems((items) => [...items, ...created]);
+    }, "Материалы загружены");
+    changeEvent.target.value = "";
+  };
+
+  const addKnowledgeLink = (submitEvent) => {
+    submitEvent.preventDefault();
+    const title = knowledgeForm.title.trim();
+    const url = knowledgeForm.url.trim();
+
+    if (!event?.id || !title || !url) {
+      return;
+    }
+
+    save(async () => {
+      const created = await api.createKnowledgeLink(event.id, {
+        title,
+        url,
+        description: nullable(knowledgeForm.description),
+        tags: parseTags(knowledgeForm.tags),
+        visibility: knowledgeForm.visibility,
+        is_active: true,
+      });
+      setKnowledgeItems((items) => [...items, created]);
+      setKnowledgeForm(emptyKnowledgeLink);
+    }, "Материал добавлен");
+  };
+
+  const addConfidentialityRule = (submitEvent) => {
+    submitEvent.preventDefault();
+    const category = ruleForm.category.trim();
+
+    if (!event?.id || !category || !ruleForm.description.trim()) {
+      return;
+    }
+
+    save(async () => {
+      const created = await api.createConfidentialityRule(event.id, {
+        category,
+        description: ruleForm.description.trim(),
+        severity: ruleForm.severity,
+        is_active: true,
+      });
+      setConfidentialityRules((items) => [...items, created]);
+      setRuleForm(emptyConfidentialityRule);
+    }, "Правило конфиденциальности добавлено");
+  };
+
+  const parseImportPreview = () => {
+    const value = importText.trim();
+
+    if (!value) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.slice(0, 5) : [];
+    } catch {
+      return value
+        .split("\n")
+        .slice(0, 5)
+        .map((line) => {
+          const [name, telegram_id, role] = line.split(",").map((part) => part.trim());
+          return { name, telegram_id, role };
+        })
+        .filter((item) => item.name);
+    }
+  };
+
+  const importPreview = parseImportPreview();
+
   return (
     <div className="space-y-4">
       {formError ? (
@@ -196,7 +333,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
       <Section title="Мероприятие">
         <form className="space-y-3" onSubmit={createEvent}>
           <input
-            className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+            className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
             placeholder="ICPC Semifinal"
             value={eventForm.name}
             onChange={(changeEvent) =>
@@ -204,7 +341,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
             }
           />
           <textarea
-            className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-600"
+            className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
             placeholder="Короткое описание для штаба"
             value={eventForm.description}
             onChange={(changeEvent) =>
@@ -215,7 +352,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
             }
           />
           <button
-            className="h-11 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+            className="h-11 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
             disabled={isSaving || !eventForm.name.trim()}
             type="submit"
           >
@@ -235,7 +372,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
           <Section title="Роли">
             <form className="space-y-3" onSubmit={createRole}>
               <input
-                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                 placeholder="Регистрация"
                 value={roleForm.name}
                 onChange={(changeEvent) =>
@@ -243,7 +380,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                 }
               />
               <textarea
-                className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-600"
+                className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
                 placeholder="Что делает роль и как Алисе выбирать исполнителей"
                 value={roleForm.ai_prompt}
                 onChange={(changeEvent) =>
@@ -260,7 +397,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                       aria-label={color}
                       className={`h-8 w-8 rounded-full border-2 ${
                         roleForm.color === color
-                          ? "border-slate-950"
+                          ? "border-violet-700"
                           : "border-transparent"
                       }`}
                       key={color}
@@ -285,7 +422,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                 </label>
               </div>
               <button
-                className="h-11 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+                className="h-11 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
                 disabled={isSaving || !roleForm.name.trim()}
                 type="submit"
               >
@@ -305,10 +442,190 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
             </div>
           </Section>
 
+          <Section title="База знаний Алисы">
+            <div className="space-y-3">
+              <label className="block rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-sm font-medium text-slate-700">
+                Загрузить файл
+                <input
+                  accept=".pdf,.txt,.mp3,.mp4,.jpeg,.jpg,.png,application/pdf,text/plain,audio/mpeg,video/mp4,image/jpeg,image/png"
+                  className="sr-only"
+                  multiple
+                  type="file"
+                  onChange={addKnowledgeFile}
+                />
+              </label>
+              <form className="space-y-2" onSubmit={addKnowledgeLink}>
+                <input
+                  className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                  placeholder="Название материала"
+                  value={knowledgeForm.title}
+                  onChange={(changeEvent) =>
+                    setKnowledgeForm((form) => ({
+                      ...form,
+                      title: changeEvent.target.value,
+                    }))
+                  }
+                />
+                <input
+                  className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                  placeholder="Ссылка на регламент, карту или документ"
+                  value={knowledgeForm.url}
+                  onChange={(changeEvent) =>
+                    setKnowledgeForm((form) => ({
+                      ...form,
+                      url: changeEvent.target.value,
+                    }))
+                  }
+                />
+                <textarea
+                  className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
+                  placeholder="Что в этом материале"
+                  value={knowledgeForm.description}
+                  onChange={(changeEvent) =>
+                    setKnowledgeForm((form) => ({
+                      ...form,
+                      description: changeEvent.target.value,
+                    }))
+                  }
+                />
+                <div className="grid grid-cols-[1fr_120px] gap-2">
+                  <input
+                    className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                    placeholder="Теги через запятую"
+                    value={knowledgeForm.tags}
+                    onChange={(changeEvent) =>
+                      setKnowledgeForm((form) => ({
+                        ...form,
+                        tags: changeEvent.target.value,
+                      }))
+                    }
+                  />
+                  <select
+                    className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
+                    value={knowledgeForm.visibility}
+                    onChange={(changeEvent) =>
+                      setKnowledgeForm((form) => ({
+                        ...form,
+                        visibility: changeEvent.target.value,
+                      }))
+                    }
+                  >
+                    {visibilityOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  className="h-11 w-full rounded-lg bg-violet-700 px-4 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={
+                    isSaving || !knowledgeForm.title.trim() || !knowledgeForm.url.trim()
+                  }
+                  type="submit"
+                >
+                  Добавить материал
+                </button>
+              </form>
+              {knowledgeItems.length > 0 ? (
+                <div className="space-y-2">
+                  {knowledgeItems.map((item) => (
+                    <div
+                      className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                      key={item.id}
+                    >
+                      <div className="font-medium text-slate-900">{item.title}</div>
+                      <div className="mt-1 break-all text-xs text-slate-500">{item.url}</div>
+                      {item.description ? (
+                        <div className="mt-1 text-xs text-slate-600">
+                          {item.description}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Материалов базы знаний пока нет.
+                </p>
+              )}
+            </div>
+          </Section>
+
+          <Section title="Конфиденциальность">
+            <form className="space-y-2" onSubmit={addConfidentialityRule}>
+              <input
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                placeholder="Категория закрытых данных"
+                value={ruleForm.category}
+                onChange={(changeEvent) =>
+                  setRuleForm((form) => ({ ...form, category: changeEvent.target.value }))
+                }
+              />
+              <textarea
+                className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
+                placeholder="Что Алиса не должна раскрывать без прав"
+                value={ruleForm.description}
+                onChange={(changeEvent) =>
+                  setRuleForm((form) => ({
+                    ...form,
+                    description: changeEvent.target.value,
+                  }))
+                }
+              />
+              <select
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
+                value={ruleForm.severity}
+                onChange={(changeEvent) =>
+                  setRuleForm((form) => ({ ...form, severity: changeEvent.target.value }))
+                }
+              >
+                {severityOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="h-11 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={
+                  isSaving || !ruleForm.category.trim() || !ruleForm.description.trim()
+                }
+                type="submit"
+              >
+                Добавить правило
+              </button>
+            </form>
+            {confidentialityRules.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                {confidentialityRules.map((rule) => (
+                  <div
+                    className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                    key={rule.id}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-slate-900">{rule.category}</span>
+                      <span className="rounded-full bg-slate-200 px-2 py-1 text-[11px] text-slate-600">
+                        {rule.severity}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {rule.description}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-slate-500">
+                Правила конфиденциальности ещё не добавлены.
+              </p>
+            )}
+          </Section>
+
           <Section title="Зоны">
             <form className="space-y-3" onSubmit={createZone}>
               <input
-                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                 placeholder="Вход"
                 value={zoneForm.name}
                 onChange={(changeEvent) =>
@@ -316,7 +633,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                 }
               />
               <input
-                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                 placeholder="Описание зоны"
                 value={zoneForm.description}
                 onChange={(changeEvent) =>
@@ -327,7 +644,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                 }
               />
               <button
-                className="h-11 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+                className="h-11 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
                 disabled={isSaving || !zoneForm.name.trim()}
                 type="submit"
               >
@@ -349,7 +666,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
           <Section title="Люди">
             <form className="space-y-3" onSubmit={createStaff}>
               <input
-                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                 placeholder="Анна Иванова"
                 value={staffForm.name}
                 onChange={(changeEvent) =>
@@ -358,7 +675,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
               />
               <div className="grid grid-cols-2 gap-2">
                 <input
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                   inputMode="numeric"
                   placeholder="Telegram ID"
                   value={staffForm.telegram_id}
@@ -370,7 +687,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                   }
                 />
                 <input
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                   placeholder="username"
                   value={staffForm.telegram_username}
                   onChange={(changeEvent) =>
@@ -383,7 +700,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <select
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-teal-600"
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
                   value={staffForm.role_id}
                   onChange={(changeEvent) =>
                     setStaffForm((form) => ({
@@ -400,7 +717,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                   ))}
                 </select>
                 <select
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-teal-600"
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
                   value={staffForm.zone_id}
                   onChange={(changeEvent) =>
                     setStaffForm((form) => ({
@@ -431,7 +748,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                 Администратор
               </label>
               <button
-                className="h-11 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+                className="h-11 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
                 disabled={isSaving || !staffForm.name.trim()}
                 type="submit"
               >
@@ -440,6 +757,32 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
             </form>
             <p className="mt-4 text-xs text-slate-500">
               Сейчас в событии: {staff.length} участников
+            </p>
+          </Section>
+
+          <Section title="Импорт волонтёров">
+            <textarea
+              className="min-h-28 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
+              placeholder={'CSV: Анна,222222222,Регистрация\nили JSON: [{"name":"Анна","telegram_id":"222222222"}]'}
+              value={importText}
+              onChange={(changeEvent) => setImportText(changeEvent.target.value)}
+            />
+            {importPreview.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                {importPreview.map((item, index) => (
+                  <div
+                    className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                    key={`${item.name}-${index}`}
+                  >
+                    {item.name || "Без имени"}
+                    {item.telegram_id ? ` · ${item.telegram_id}` : ""}
+                    {item.role ? ` · ${item.role}` : ""}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <p className="mt-3 text-xs text-slate-500">
+              Массовый импорт пока готов как UI. Для сохранения пачкой нужен отдельный backend endpoint.
             </p>
           </Section>
         </>

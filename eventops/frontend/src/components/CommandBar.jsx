@@ -6,7 +6,12 @@ const commandTypes = [
   { id: "question", label: "Вопрос" },
 ];
 
-const audioTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+const audioTypes = [
+  "audio/ogg;codecs=opus",
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+];
 
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -85,7 +90,7 @@ export default function CommandBar({ disabled = false, onSubmit }) {
           audioBase64,
           mimeType: blob.type,
         });
-        setVoiceStatus("Аудио записано и готово к отправке Алисе.");
+        setVoiceStatus("Аудио записано и отправлено Алисе.");
       };
 
       recorder.start();
@@ -109,7 +114,7 @@ export default function CommandBar({ disabled = false, onSubmit }) {
           <button
             className={`rounded-md border px-3 py-2 text-sm font-medium ${
               commandType === type.id
-                ? "border-teal-600 bg-teal-50 text-teal-700"
+                ? "border-violet-600 bg-violet-50 text-violet-700"
                 : "border-slate-200 text-slate-600"
             }`}
             key={type.id}
@@ -122,16 +127,18 @@ export default function CommandBar({ disabled = false, onSubmit }) {
       </div>
 
       <textarea
-        className="min-h-36 w-full rounded-lg border border-slate-300 px-3 py-3 text-base outline-none focus:border-teal-600"
+        className="min-h-36 w-full rounded-lg border border-slate-300 px-3 py-3 text-base outline-none focus:border-violet-600"
         placeholder="На регистрации очередь, нужны люди"
         disabled={disabled}
         value={text}
         onChange={(event) => setText(event.target.value)}
       />
 
-      <div className="grid grid-cols-[96px_1fr] gap-2">
+      <div className="grid grid-cols-[1fr_112px] gap-2">
         <button
-          className="h-12 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 disabled:opacity-60"
+          className={`h-12 rounded-lg text-sm font-semibold text-white disabled:opacity-60 ${
+            isRecording ? "bg-red-600" : "bg-violet-700"
+          }`}
           disabled={disabled && !isRecording}
           type="button"
           onClick={isRecording ? stopRecording : startRecording}
@@ -139,7 +146,7 @@ export default function CommandBar({ disabled = false, onSubmit }) {
           {isRecording ? "Стоп" : "Голос"}
         </button>
         <button
-          className="h-12 rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+          className="h-12 rounded-lg border border-violet-200 bg-white text-xs font-semibold text-violet-700 disabled:opacity-60"
           disabled={disabled || !text.trim()}
           type="submit"
         >
