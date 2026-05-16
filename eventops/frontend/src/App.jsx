@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api/client.js";
+import AliceResponse from "./components/AliceResponse.jsx";
 import CommandBar from "./components/CommandBar.jsx";
 import EventSelector from "./components/EventSelector.jsx";
 import LoginForm from "./components/LoginForm.jsx";
@@ -22,8 +23,12 @@ const titles = {
 export default function App() {
   const [activeTab, setActiveTab] = useState("command");
   const [authError, setAuthError] = useState("");
+  const [agentError, setAgentError] = useState("");
+  const [agentResponse, setAgentResponse] = useState(null);
   const [events, setEvents] = useState([]);
   const [eventsError, setEventsError] = useState("");
+  const [isCommandLoading, setIsCommandLoading] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [isEventsLoading, setIsEventsLoading] = useState(false);
   const [isLoginLoading, setIsLoginLoading] = useState(false);
   const [lastCommand, setLastCommand] = useState(null);
@@ -91,6 +96,52 @@ export default function App() {
     }
   };
 
+  const sendCommand = async (command) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    const payload = command.audioBase64
+      ? { audio_base64: command.audioBase64 }
+      : { text: command.text };
+
+    setAgentError("");
+    setAgentResponse(null);
+    setIsCommandLoading(true);
+    setLastCommand(command);
+
+    try {
+      const response = await api.sendCommand(selectedEvent.id, payload);
+      setAgentResponse(response);
+    } catch (error) {
+      setAgentError(error.message);
+    } finally {
+      setIsCommandLoading(false);
+    }
+  };
+
+  const confirmSuggestion = async (ticketId, staffIds, accept) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    setAgentError("");
+    setIsConfirming(true);
+
+    try {
+      await api.confirmSuggestion(selectedEvent.id, {
+        ticket_id: ticketId,
+        accept,
+        staff_ids: staffIds.length > 0 ? staffIds : null,
+      });
+      setAgentResponse(null);
+    } catch (error) {
+      setAgentError(error.message);
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
   if (!token) {
     return (
       <LoginForm error={authError} isLoading={isLoginLoading} onSubmit={login} />
@@ -126,7 +177,10 @@ export default function App() {
           {activeTab === "command" ? (
             <div className="space-y-4">
               {selectedEvent ? (
-                <CommandBar onSubmit={setLastCommand} />
+                <CommandBar
+                  disabled={isCommandLoading || isConfirming}
+                  onSubmit={sendCommand}
+                />
               ) : (
                 <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
                   <p className="text-sm text-slate-600">
@@ -149,6 +203,24 @@ export default function App() {
                   ) : null}
                 </section>
               ) : null}
+              {isCommandLoading ? (
+                <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">
+                  Отправляем команду Алисе...
+                </p>
+              ) : null}
+              {agentError ? (
+                <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {agentError}
+                </p>
+              ) : null}
+              <AliceResponse
+                isConfirming={isConfirming}
+                response={agentResponse}
+                onConfirm={(ticketId, staffIds) =>
+                  confirmSuggestion(ticketId, staffIds, true)
+                }
+                onReject={(ticketId) => confirmSuggestion(ticketId, [], false)}
+              />
             </div>
           ) : (
             <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">

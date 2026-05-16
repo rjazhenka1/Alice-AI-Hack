@@ -16,7 +16,15 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
+    let detail = message;
+
+    try {
+      detail = JSON.parse(message).detail || message;
+    } catch {
+      detail = message;
+    }
+
+    throw new Error(detail || `Request failed: ${response.status}`);
   }
 
   return response.status === 204 ? null : response.json();
@@ -32,10 +40,10 @@ export const api = {
   getStaff: (eventId) => request(`/events/${eventId}/staff`),
   getTickets: (eventId) => request(`/events/${eventId}/tickets`),
   getMessages: (eventId) => request(`/events/${eventId}/messages`),
-  sendCommand: (eventId, text) =>
+  sendCommand: (eventId, payload) =>
     request(`/events/${eventId}/agent/command`, {
       method: "POST",
-      body: { text },
+      body: payload,
     }),
   confirmSuggestion: (eventId, payload) =>
     request(`/events/${eventId}/agent/confirm`, {

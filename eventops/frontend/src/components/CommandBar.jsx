@@ -17,7 +17,7 @@ function blobToBase64(blob) {
   });
 }
 
-export default function CommandBar({ onSubmit }) {
+export default function CommandBar({ disabled = false, onSubmit }) {
   const [commandType, setCommandType] = useState("incident");
   const [isRecording, setIsRecording] = useState(false);
   const [text, setText] = useState("");
@@ -124,6 +124,7 @@ export default function CommandBar({ onSubmit }) {
       <textarea
         className="min-h-36 w-full rounded-lg border border-slate-300 px-3 py-3 text-base outline-none focus:border-teal-600"
         placeholder="На регистрации очередь, нужны люди"
+        disabled={disabled}
         value={text}
         onChange={(event) => setText(event.target.value)}
       />
@@ -131,6 +132,7 @@ export default function CommandBar({ onSubmit }) {
       <div className="grid grid-cols-[96px_1fr] gap-2">
         <button
           className="h-12 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 disabled:opacity-60"
+          disabled={disabled && !isRecording}
           type="button"
           onClick={isRecording ? stopRecording : startRecording}
         >
@@ -138,7 +140,7 @@ export default function CommandBar({ onSubmit }) {
         </button>
         <button
           className="h-12 rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
-          disabled={!text.trim()}
+          disabled={disabled || !text.trim()}
           type="submit"
         >
           Отправить
