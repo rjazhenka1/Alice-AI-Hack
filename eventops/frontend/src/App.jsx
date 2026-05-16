@@ -5,6 +5,7 @@ import CommandBar from "./components/CommandBar.jsx";
 import EventSelector from "./components/EventSelector.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MessageFeed from "./components/MessageFeed.jsx";
+import ProfilePanel from "./components/ProfilePanel.jsx";
 import StaffGrid from "./components/StaffGrid.jsx";
 import TicketTable from "./components/TicketTable.jsx";
 import { useAppStore } from "./store/useAppStore.js";
@@ -52,6 +53,7 @@ export default function App() {
   const setToken = useAppStore((state) => state.setToken);
   const selectedEvent = events.find((event) => String(event.id) === eventId);
   const selectedEventId = selectedEvent?.id;
+  const currentStaff = useAppStore((state) => state.currentStaff);
 
   useEffect(() => {
     if (!token) {
@@ -349,20 +351,17 @@ export default function App() {
                 />
               </section>
             </div>
+          ) : activeTab === "profile" ? (
+            <ProfilePanel
+              currentStaff={currentStaff}
+              event={selectedEvent}
+              onLogout={logout}
+            />
           ) : (
             <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
               <p className="text-sm text-slate-600">
                 Экран "{titles[activeTab]}" будет заполнен следующим шагом.
               </p>
-              {activeTab === "profile" ? (
-                <button
-                  className="mt-4 h-10 rounded-lg border border-slate-300 px-4 text-sm font-medium text-slate-700"
-                  type="button"
-                  onClick={logout}
-                >
-                  Выйти
-                </button>
-              ) : null}
             </section>
           )}
         </main>
