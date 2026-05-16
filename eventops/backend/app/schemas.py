@@ -266,6 +266,30 @@ class AgentCommandRequest(BaseModel):
     text:          Optional[str]  = Field(None, examples=["На регистрации очередь, нужны люди"])
     audio_base64:  Optional[str]  = None  # base64-encoded audio
 
+
+class TranscriptionRequest(BaseModel):
+    """Отладочная ручка для транскрипции входного аудио."""
+
+    audio_base64: str = Field(..., min_length=1, description="Base64-encoded audio payload")
+    language: str = Field("ru-RU", description="Язык распознавания")
+
+
+class TranscriptionResponse(BaseModel):
+    """Результат транскрипции (stub-first контракт)."""
+
+    text: Optional[str] = None
+    status: str = Field(..., description="ok | not_implemented | error")
+    detail: Optional[str] = None
+
+
+class AudioSynthesis(BaseModel):
+    """Синтезированный голосовой ответ Алисы (base64)."""
+
+    audio_base64: Optional[str] = None
+    format: str = Field("oggopus", description="Аудио-формат синтеза")
+    status: str = Field(..., description="ok | not_implemented | error")
+    detail: Optional[str] = None
+
 class AiSuggestion(BaseModel):
     """Предложение Алисы — возвращается фронту для подтверждения."""
     reasoning:          str              # объяснение решения
@@ -282,6 +306,7 @@ class AgentCommandResponse(BaseModel):
     """
     action:      str
     message:     str                      # текст ответа Алисы для UI
+    audio:       Optional[AudioSynthesis] = None
     suggestion:  Optional[AiSuggestion]  = None
     ticket:      Optional[Ticket]        = None
 

@@ -28,6 +28,16 @@ def audio_not_supported_message() -> str:
     return "Поддержка голосовых сообщений не реализована"
 
 
+class SpeechKitClient:
+    """SpeechKit integration stub (STT/TTS contracts only, no implementation yet)."""
+
+    async def transcribe_audio_base64(self, *, audio_base64: str, language: str = "ru-RU") -> str:
+        raise NotImplementedError("SpeechKit STT is not implemented yet")
+
+    async def synthesize_text_base64(self, *, text: str, voice: str = "alena") -> str:
+        raise NotImplementedError("SpeechKit TTS is not implemented yet")
+
+
 class AlicePlanner:
     """
     PoC planner that classifies command into canonical scenarios.
