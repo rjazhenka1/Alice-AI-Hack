@@ -6,9 +6,10 @@ cd "$ROOT_DIR"
 
 ADMIN_TELEGRAM_ID="${ADMIN_TELEGRAM_ID:-111111111}"
 ADMIN_NAME="${ADMIN_NAME:-Coordinator}"
+ADMIN_TELEGRAM_USERNAME="${ADMIN_TELEGRAM_USERNAME:-BellatorHonoris}"
 VOLUNTEER_TELEGRAM_ID="${VOLUNTEER_TELEGRAM_ID:-222222222}"
-VOLUNTEER_NAME="${VOLUNTEER_NAME:-Volunteer}"
-VOLUNTEER_USERNAME="${VOLUNTEER_USERNAME:-eventops_volunteer}"
+VOLUNTEER_NAME="${VOLUNTEER_NAME:-Максим Альжанов}"
+VOLUNTEER_USERNAME="${VOLUNTEER_USERNAME:-rjazhenka1}"
 VOLUNTEER_ROLE_NAME="${VOLUNTEER_ROLE_NAME:-Регистрация}"
 VOLUNTEER_ZONE_NAME="${VOLUNTEER_ZONE_NAME:-Вход}"
 EVENT_NAME="${EVENT_NAME:-ICPC Semifinal}"
@@ -17,6 +18,11 @@ EVENT_DESCRIPTION="${EVENT_DESCRIPTION:-Smoke test}"
 if [[ ! -f backend/.env ]]; then
   cp backend/.env.example backend/.env
   echo "Created backend/.env from backend/.env.example. Fill external keys there when needed."
+fi
+
+if ! grep -q '^ADMIN_TELEGRAM_USERNAME=' backend/.env; then
+  printf '\nADMIN_TELEGRAM_USERNAME=@%s\n' "${ADMIN_TELEGRAM_USERNAME#@}" >> backend/.env
+  echo "Added ADMIN_TELEGRAM_USERNAME=@${ADMIN_TELEGRAM_USERNAME#@} to backend/.env."
 fi
 
 if [[ ! -f frontend/.env ]]; then
@@ -45,6 +51,7 @@ echo "Seeding demo event/admin if missing..."
 docker compose exec -T \
   -e ADMIN_TELEGRAM_ID="$ADMIN_TELEGRAM_ID" \
   -e ADMIN_NAME="$ADMIN_NAME" \
+  -e ADMIN_TELEGRAM_USERNAME="$ADMIN_TELEGRAM_USERNAME" \
   -e VOLUNTEER_TELEGRAM_ID="$VOLUNTEER_TELEGRAM_ID" \
   -e VOLUNTEER_NAME="$VOLUNTEER_NAME" \
   -e VOLUNTEER_USERNAME="$VOLUNTEER_USERNAME" \
@@ -65,6 +72,7 @@ from app.models import Event, Role, Staff, StaffStatus, Zone
 async def main():
     admin_telegram_id = os.environ["ADMIN_TELEGRAM_ID"]
     admin_name = os.environ["ADMIN_NAME"]
+    admin_telegram_username = os.environ["ADMIN_TELEGRAM_USERNAME"].strip().lstrip("@").lower()
     volunteer_telegram_id = os.environ["VOLUNTEER_TELEGRAM_ID"]
     volunteer_name = os.environ["VOLUNTEER_NAME"]
     volunteer_username = os.environ["VOLUNTEER_USERNAME"]
@@ -107,12 +115,15 @@ async def main():
             db.add(zone)
             await db.flush()
 
-        admin = await db.scalar(select(Staff).where(Staff.telegram_id == admin_telegram_id))
+        admin = await db.scalar(select(Staff).where(Staff.telegram_username == admin_telegram_username))
+        if admin is None:
+            admin = await db.scalar(select(Staff).where(Staff.telegram_id == admin_telegram_id))
         if admin is None:
             admin = Staff(
                 event_id=event.id,
                 name=admin_name,
                 telegram_id=admin_telegram_id,
+                telegram_username=admin_telegram_username,
                 is_admin=True,
                 status=StaffStatus.free,
             )
@@ -121,9 +132,13 @@ async def main():
         else:
             admin.event_id = event.id
             admin.name = admin_name
+            admin.telegram_id = admin_telegram_id
+            admin.telegram_username = admin_telegram_username
             admin.is_admin = True
 
-        volunteer = await db.scalar(select(Staff).where(Staff.telegram_id == volunteer_telegram_id))
+        volunteer = await db.scalar(select(Staff).where(Staff.telegram_username == volunteer_username))
+        if volunteer is None:
+            volunteer = await db.scalar(select(Staff).where(Staff.telegram_id == volunteer_telegram_id))
         if volunteer is None:
             volunteer = Staff(
                 event_id=event.id,
@@ -152,8 +167,10 @@ async def main():
         print(f"EVENT_NAME={event.name}")
         print(f"ADMIN_ID={admin.id}")
         print(f"ADMIN_TELEGRAM_ID={admin.telegram_id}")
+        print(f"ADMIN_TELEGRAM_USERNAME=@{admin.telegram_username}")
         print(f"VOLUNTEER_ID={volunteer.id}")
         print(f"VOLUNTEER_TELEGRAM_ID={volunteer.telegram_id}")
+        print(f"VOLUNTEER_TELEGRAM_USERNAME=@{volunteer.telegram_username}")
         print(f"VOLUNTEER_ROLE={role.name}")
         print(f"VOLUNTEER_ZONE={zone.name}")
         print("SEED_STATUS=ready")
@@ -165,8 +182,8 @@ PY
 echo
 echo "Frontend: http://localhost:5173"
 echo "API docs: http://localhost:8000/docs"
-echo "Admin login Telegram ID: $ADMIN_TELEGRAM_ID"
-echo "Volunteer login Telegram ID: $VOLUNTEER_TELEGRAM_ID"
+echo "Admin login Telegram username: @${ADMIN_TELEGRAM_USERNAME#@}"
+echo "Volunteer login Telegram username: @${VOLUNTEER_USERNAME#@}"
 echo
 echo "Useful commands:"
 echo "  docker compose logs -f backend"

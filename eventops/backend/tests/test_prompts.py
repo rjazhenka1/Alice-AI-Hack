@@ -101,14 +101,15 @@ def test_build_rag_informational_synthesis_prompt_contains_contract_and_few_shot
     assert '"answer": "краткий точный ответ"' in prompt
     assert "1) Используй только факты из rag_fragments." in prompt
     assert "2) Если данных недостаточно/нет — не выдумывай" in prompt
+    assert "3) Не упоминай источник" in prompt
     assert "4) Никаких confidential-утечек." in prompt
     assert "5) Только JSON, без markdown." in prompt
 
     # Few-shot presence
     assert "Few-shot:" in prompt
     assert 'user_question: "Где туалет рядом с 331?"' in prompt
-    assert "Источник: admin://map/floor-3" in prompt
-    assert '{"kind":"knowledge_base","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3)."' in prompt
+    assert "Источник: admin://map/floor-3" not in prompt
+    assert '{"kind":"knowledge_base","answer":"Туалет находится рядом с кабинетом 331, в правом крыле."' in prompt
 
 
 def test_build_knowledge_capture_prompt_contains_schema_and_examples() -> None:

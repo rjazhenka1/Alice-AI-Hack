@@ -43,18 +43,21 @@ async function request(path, options = {}) {
       detail = message;
     }
 
-    throw new Error(detail || `Request failed: ${response.status}`);
+    const error = new Error(detail || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   return response.status === 204 ? null : response.json();
 }
 
 export const api = {
-  login: (telegramId) =>
+  login: (telegramUsername) =>
     request("/auth/login", {
       method: "POST",
-      body: { telegram_id: telegramId },
+      body: { telegram_username: telegramUsername },
     }),
+  getMe: () => request("/auth/me"),
   getEvents: () => request("/events"),
   createEvent: (payload) =>
     request("/events", {

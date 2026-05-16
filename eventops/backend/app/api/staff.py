@@ -12,6 +12,11 @@ from .common import ensure_event_access, message_visibility_filter, ticket_visib
 router = APIRouter(prefix="/events/{event_id}", tags=["staff"])
 
 
+def _normalize_username(value: str | None) -> str | None:
+    normalized = (value or "").strip().lstrip("@").lower()
+    return normalized or None
+
+
 def _require_admin(current_staff: Staff) -> None:
     if not current_staff.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can modify event setup")
@@ -61,7 +66,9 @@ async def create_staff(
     await _ensure_role(db, event_id, payload.role_id)
     await _ensure_zone(db, event_id, payload.zone_id)
 
-    staff = Staff(event_id=event_id, **payload.model_dump())
+    data = payload.model_dump()
+    data["telegram_username"] = _normalize_username(data.get("telegram_username"))
+    staff = Staff(event_id=event_id, **data)
     db.add(staff)
     await db.commit()
     result = await db.scalar(
@@ -85,6 +92,8 @@ async def update_staff(
         raise HTTPException(status_code=404, detail="Staff not found")
 
     data = payload.model_dump(exclude_unset=True)
+    if "telegram_username" in data:
+        data["telegram_username"] = _normalize_username(data.get("telegram_username"))
     await _ensure_role(db, event_id, data.get("role_id"))
     await _ensure_zone(db, event_id, data.get("zone_id"))
     for key, value in data.items():
@@ -129,7 +138,7 @@ async def get_staff_context(
 ) -> schemas.MyContext:
     await ensure_event_access(event_id, current_staff)
     if not current_staff.is_admin and current_staff.id != staff_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this staff context")
+        staff_id = current_staff.id
 
     target = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.event_id == event_id))
     if target is None:
@@ -173,6 +182,7 @@ async def get_staff_context(
         (
             await db.scalars(
                 select(Message)
+                .options(selectinload(Message.from_staff).selectinload(Staff.role))
                 .where(Message.event_id == event_id)
                 .where(visible_messages)
                 .where(or_(Message.to_staff_id == staff_id, Message.from_staff_id == staff_id, Message.to_role_id == target.role_id))

@@ -4,7 +4,7 @@ from uuid import uuid4
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import and_, false, or_, select, true
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import schemas
@@ -39,18 +39,6 @@ async def _save_upload(file: UploadFile, destination: Path) -> bytes:
     return content
 
 
-async def _kb_visibility_filter(db: AsyncSession, staff: Staff) -> Any:
-    if staff.is_admin:
-        return true()
-
-    confidential_allowed = await can_see_confidential(db, staff)
-    return or_(
-        KnowledgeBaseLink.visibility == Visibility.public,
-        and_(KnowledgeBaseLink.visibility == Visibility.role_only, true() if staff.role_id else false()),
-        and_(KnowledgeBaseLink.visibility == Visibility.confidential, true() if confidential_allowed else false()),
-    )
-
-
 async def _require_admin(staff: Staff) -> None:
     if not staff.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can modify knowledge settings")
@@ -63,11 +51,9 @@ async def list_knowledge_links(
     current_staff: Staff = Depends(get_current_staff),
 ) -> list[KnowledgeBaseLink]:
     await ensure_event_access(event_id, current_staff)
-    visible_clause = await _kb_visibility_filter(db, current_staff)
     result = await db.execute(
         select(KnowledgeBaseLink)
         .where(KnowledgeBaseLink.event_id == event_id, KnowledgeBaseLink.is_active.is_(True))
-        .where(visible_clause)
         .order_by(KnowledgeBaseLink.id.asc())
     )
     return list(result.scalars().all())
@@ -84,6 +70,22 @@ async def create_knowledge_link(
     await _require_admin(current_staff)
     link = KnowledgeBaseLink(event_id=event_id, **payload.model_dump())
     db.add(link)
+    await db.flush()
+    index_text = "\n".join(
+        part
+        for part in [link.title, link.description or "", link.url]
+        if part
+    ).strip()
+    if index_text:
+        await index_document_chunks(
+            db,
+            event_id=event_id,
+            content=index_text.encode("utf-8"),
+            source_title=link.title,
+            source_url=link.url,
+            knowledge_base_link_id=link.id,
+            metadata={"content_type": "text/plain", "source": "link_description"},
+        )
     await db.commit()
     await db.refresh(link)
     return link
@@ -140,6 +142,16 @@ async def upload_knowledge_document(
         knowledge_base_link_id=link.id,
         metadata={"filename": filename, "content_type": file.content_type},
     )
+    if description:
+        await index_document_chunks(
+            db,
+            event_id=event_id,
+            content=description.encode("utf-8"),
+            source_title=f"{link.title} — описание",
+            source_url=link.url,
+            knowledge_base_link_id=link.id,
+            metadata={"filename": filename, "content_type": "text/plain", "source": "manual_description"},
+        )
     await db.commit()
     await db.refresh(link)
     return link
