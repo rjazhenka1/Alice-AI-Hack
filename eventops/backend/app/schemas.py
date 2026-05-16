@@ -93,7 +93,7 @@ class Staff(StaffCreate):
     status:     StaffStatus
     role:       Optional[Role]  = None
     zone:       Optional[Zone]  = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -108,7 +108,7 @@ class EventCreate(BaseModel):
 
 class Event(EventCreate):
     id:         int
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

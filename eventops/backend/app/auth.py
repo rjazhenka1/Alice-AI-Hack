@@ -7,12 +7,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import get_db
+from . import schemas
 from .models import Staff
 
 
@@ -20,6 +21,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 security = HTTPBearer(auto_error=True)
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _secret_key() -> str:
@@ -49,3 +51,20 @@ async def get_current_staff(
     if staff is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Staff not found")
     return staff
+
+
+@router.post("/login", response_model=schemas.TokenResponse)
+async def login(
+    payload: schemas.LoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.TokenResponse:
+    result = await db.execute(select(Staff).where(Staff.telegram_id == payload.telegram_id))
+    staff = result.scalar_one_or_none()
+    if staff is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff not found")
+
+    return schemas.TokenResponse(
+        access_token=create_access_token({"sub": str(staff.id)}),
+        staff_id=staff.id,
+        is_admin=staff.is_admin,
+    )
