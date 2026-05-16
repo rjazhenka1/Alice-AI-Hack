@@ -452,6 +452,54 @@ class AlicePlanner:
             logger.warning("alice_knowledge_capture_failed latency_ms=%.1f model=%s error=%s", elapsed_ms, self.model, exc)
             return KnowledgeCaptureDecision(useful=False, reason="model request failed")
 
+    async def synthesize_knowledge_answer(
+        self,
+        *,
+        question: str,
+        rag_fragments: list[str],
+        system_prompt: str,
+    ) -> str | None:
+        if not self.api_key or not self.folder_id:
+            raise RuntimeError("Alice API is not configured: set ALICE_API_KEY and ALICE_FOLDER_ID")
+        if self.model == "poc-rule-based":
+            raise RuntimeError("Alice model is not configured: set ALICE_MODEL to real model id")
+
+        fragments_text = "\n".join(f"- {fragment}" for fragment in rag_fragments)
+        payload = {
+            "modelUri": self._build_model_uri(),
+            "completionOptions": {
+                "stream": False,
+                "temperature": 0.1,
+                "maxTokens": "500",
+            },
+            "messages": [
+                {"role": "system", "text": system_prompt},
+                {"role": "user", "text": f"user_question: {question}\nrag_fragments:\n{fragments_text}"},
+            ],
+        }
+        headers: dict[str, str] = {
+            "Authorization": f"Api-Key {self.api_key}",
+            "Content-Type": "application/json",
+            "x-folder-id": self.folder_id,
+        }
+
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("alice_knowledge_synthesis_ok latency_ms=%.1f model=%s", elapsed_ms, self.model)
+            text_reply = self._extract_text_from_response(data)
+            if not text_reply:
+                return None
+            return self._parse_answer_json(text_reply)
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning("alice_knowledge_synthesis_failed latency_ms=%.1f model=%s error=%s", elapsed_ms, self.model, exc)
+            return None
+
     def _plan_local(self, text: str) -> PlannedCommand:
         normalized = (text or "").strip()
         lowered = normalized.lower()
@@ -653,6 +701,24 @@ class AlicePlanner:
             tags=tags,
             reason=str(reason) if reason is not None else None,
         )
+
+    @staticmethod
+    def _parse_answer_json(raw_text: str) -> str | None:
+        clean = raw_text.strip()
+        if clean.startswith("```"):
+            clean = clean.strip("`")
+            clean = clean.replace("json", "", 1).strip()
+
+        try:
+            parsed = json.loads(clean)
+        except Exception:
+            return clean or None
+
+        answer = parsed.get("answer") or parsed.get("text")
+        if answer is None:
+            return None
+        normalized = str(answer).strip()
+        return normalized or None
 
     def _build_model_uri(self) -> str:
         folder_id = self.folder_id or ""
