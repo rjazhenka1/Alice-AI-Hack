@@ -4,6 +4,8 @@ import AliceResponse from "./components/AliceResponse.jsx";
 import CommandBar from "./components/CommandBar.jsx";
 import EventSelector from "./components/EventSelector.jsx";
 import LoginForm from "./components/LoginForm.jsx";
+import MessageFeed from "./components/MessageFeed.jsx";
+import StaffGrid from "./components/StaffGrid.jsx";
 import TicketTable from "./components/TicketTable.jsx";
 import { useAppStore } from "./store/useAppStore.js";
 
@@ -33,6 +35,12 @@ export default function App() {
   const [isEventsLoading, setIsEventsLoading] = useState(false);
   const [isLoginLoading, setIsLoginLoading] = useState(false);
   const [lastCommand, setLastCommand] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [messagesError, setMessagesError] = useState("");
+  const [isMessagesLoading, setIsMessagesLoading] = useState(false);
+  const [staff, setStaff] = useState([]);
+  const [staffError, setStaffError] = useState("");
+  const [isStaffLoading, setIsStaffLoading] = useState(false);
   const [tickets, setTickets] = useState([]);
   const [ticketsError, setTicketsError] = useState("");
   const [isTicketsLoading, setIsTicketsLoading] = useState(false);
@@ -116,6 +124,51 @@ export default function App() {
 
     loadTickets();
     const timer = window.setInterval(loadTickets, 5000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedEventId]);
+
+  useEffect(() => {
+    if (!selectedEventId) {
+      setMessages([]);
+      setStaff([]);
+      return;
+    }
+
+    let isActive = true;
+
+    const loadTeam = () => {
+      setMessagesError("");
+      setStaffError("");
+      setIsMessagesLoading(true);
+      setIsStaffLoading(true);
+
+      Promise.all([api.getStaff(selectedEventId), api.getMessages(selectedEventId)])
+        .then(([staffItems, messageItems]) => {
+          if (isActive) {
+            setStaff(staffItems);
+            setMessages(messageItems);
+          }
+        })
+        .catch((error) => {
+          if (isActive) {
+            setStaffError(error.message);
+            setMessagesError(error.message);
+          }
+        })
+        .finally(() => {
+          if (isActive) {
+            setIsMessagesLoading(false);
+            setIsStaffLoading(false);
+          }
+        });
+    };
+
+    loadTeam();
+    const timer = window.setInterval(loadTeam, 5000);
 
     return () => {
       isActive = false;
@@ -273,6 +326,29 @@ export default function App() {
               isLoading={isTicketsLoading}
               tickets={tickets}
             />
+          ) : activeTab === "team" ? (
+            <div className="space-y-5">
+              <section>
+                <h2 className="mb-3 text-sm font-semibold text-slate-700">
+                  Команда
+                </h2>
+                <StaffGrid
+                  error={staffError}
+                  isLoading={isStaffLoading}
+                  staff={staff}
+                />
+              </section>
+              <section>
+                <h2 className="mb-3 text-sm font-semibold text-slate-700">
+                  Сообщения
+                </h2>
+                <MessageFeed
+                  error={messagesError}
+                  isLoading={isMessagesLoading}
+                  messages={messages}
+                />
+              </section>
+            </div>
           ) : (
             <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
               <p className="text-sm text-slate-600">
