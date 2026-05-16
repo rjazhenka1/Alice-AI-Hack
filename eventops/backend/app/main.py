@@ -11,6 +11,7 @@ from .auth import router as auth_router
 from .api.agent import router as agent_router
 from .api.events import router as events_router
 from .api.integrations import router as integrations_router
+from .api.knowledge import router as knowledge_router
 from .api.messages import router as messages_router
 from .api.staff import router as staff_router
 from .api.tickets import router as tickets_router
@@ -43,6 +44,7 @@ app.include_router(events_router)
 app.include_router(staff_router)
 app.include_router(tickets_router)
 app.include_router(messages_router)
+app.include_router(knowledge_router)
 app.include_router(agent_router)
 app.include_router(integrations_router)
 

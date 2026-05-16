@@ -11,7 +11,7 @@ EventOps AI — Pydantic schemas (OpenAPI contract)
 from datetime import datetime
 from typing import Any, Optional
 from pydantic import BaseModel, Field
-from models import (
+from .models import (
     StaffStatus, TicketPriority, TicketStatus,
     TicketType, Visibility
 )
@@ -198,6 +198,58 @@ class Message(BaseModel):
     is_read:       bool
     visibility:    Visibility
     created_at:    datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ─── Knowledge Base & Confidentiality ─────────────────────────────────────────
+
+class KnowledgeBaseLinkCreate(BaseModel):
+    title:       str = Field(..., max_length=255)
+    url:         str = Field(..., max_length=2048)
+    description: Optional[str] = None
+    tags:        list[str] = Field(default_factory=list)
+    is_active:   bool = True
+    visibility:  Visibility = Visibility.public
+
+
+class KnowledgeBaseLinkUpdate(BaseModel):
+    title:       Optional[str] = Field(None, max_length=255)
+    url:         Optional[str] = Field(None, max_length=2048)
+    description: Optional[str] = None
+    tags:        Optional[list[str]] = None
+    is_active:   Optional[bool] = None
+    visibility:  Optional[Visibility] = None
+
+
+class KnowledgeBaseLink(KnowledgeBaseLinkCreate):
+    id:         int
+    event_id:   int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ConfidentialityRuleCreate(BaseModel):
+    category:    str = Field(..., max_length=255)
+    description: str
+    severity:    str = Field("medium", pattern=r"^(low|medium|high)$")
+    is_active:   bool = True
+
+
+class ConfidentialityRuleUpdate(BaseModel):
+    category:    Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    severity:    Optional[str] = Field(None, pattern=r"^(low|medium|high)$")
+    is_active:   Optional[bool] = None
+
+
+class ConfidentialityRule(ConfidentialityRuleCreate):
+    id:         int
+    event_id:   int
+    created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 

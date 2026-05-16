@@ -75,6 +75,8 @@ class Event(Base):
     roles   = relationship("Role",   back_populates="event", cascade="all, delete-orphan")
     staff   = relationship("Staff",  back_populates="event", cascade="all, delete-orphan")
     tickets = relationship("Ticket", back_populates="event", cascade="all, delete-orphan")
+    knowledge_base_links = relationship("KnowledgeBaseLink", back_populates="event", cascade="all, delete-orphan")
+    confidentiality_rules = relationship("ConfidentialityRule", back_populates="event", cascade="all, delete-orphan")
 
 
 class Zone(Base):
@@ -263,3 +265,37 @@ class AgentSession(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     staff = relationship("Staff", foreign_keys=[staff_id])
+
+
+class KnowledgeBaseLink(Base):
+    """Ссылка на регламент/документ/инструкцию, которую Алиса может использовать в ответах."""
+    __tablename__ = "knowledge_base_links"
+
+    id          = Column(Integer, primary_key=True)
+    event_id    = Column(Integer, ForeignKey("events.id"), nullable=False)
+    title       = Column(String(255), nullable=False)
+    url         = Column(String(2048), nullable=False)
+    description = Column(Text)
+    tags        = Column(JSON, default=list)
+    is_active   = Column(Boolean, default=True)
+    visibility  = Column(Enum(Visibility), default=Visibility.public)
+    created_at  = Column(DateTime, default=utcnow)
+    updated_at  = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    event = relationship("Event", back_populates="knowledge_base_links")
+
+
+class ConfidentialityRule(Base):
+    """Правило, какие категории данных считаются закрытыми на мероприятии."""
+    __tablename__ = "confidentiality_rules"
+
+    id          = Column(Integer, primary_key=True)
+    event_id    = Column(Integer, ForeignKey("events.id"), nullable=False)
+    category    = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    severity    = Column(String(20), default="medium")
+    is_active   = Column(Boolean, default=True)
+    created_at  = Column(DateTime, default=utcnow)
+    updated_at  = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    event = relationship("Event", back_populates="confidentiality_rules")
