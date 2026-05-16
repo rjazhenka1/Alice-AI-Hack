@@ -1,4 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import re
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import case, false, select, true
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +17,22 @@ from ..notifier import enqueue_notification, format_task_notification
 from .common import can_see_confidential, ensure_event_access, ticket_visibility_filter
 
 router = APIRouter(prefix="/events/{event_id}/tickets", tags=["tickets"])
+
+
+def _document_storage_dir() -> Path:
+    return Path("storage/documents")
+
+
+def _safe_filename(value: str) -> str:
+    name = Path(value or "document").name
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name) or "document"
+
+
+async def _save_upload(file: UploadFile, destination: Path) -> int:
+    content = await file.read()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(content)
+    return len(content)
 
 
 def _priority_order():
@@ -209,6 +230,39 @@ async def create_ticket_reply(
         .where(TicketReply.id == reply.id)
     )
     return loaded or reply
+
+
+@router.post("/{ticket_id}/documents", response_model=schemas.DocumentAttachment, status_code=status.HTTP_201_CREATED)
+async def attach_ticket_document(
+    event_id: int,
+    ticket_id: int,
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_staff: Staff = Depends(get_current_staff),
+) -> schemas.DocumentAttachment:
+    await ensure_event_access(event_id, current_staff)
+    ticket = await _load_visible_ticket(db, event_id, ticket_id, current_staff)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    document_id = uuid4().hex
+    filename = _safe_filename(file.filename or "document")
+    destination = _document_storage_dir() / str(event_id) / "tickets" / str(ticket_id) / f"{document_id}_{filename}"
+    size = await _save_upload(file, destination)
+    document = {
+        "id": document_id,
+        "title": title or filename,
+        "filename": filename,
+        "content_type": file.content_type,
+        "size": size,
+        "path": str(destination),
+        "uploaded_by_id": current_staff.id,
+        "created_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+    }
+    ticket.documents = [*ticket.documents, document]
+    await db.commit()
+    return schemas.DocumentAttachment.model_validate(document)
 
 
 @router.post("/{ticket_id}/assign", response_model=schemas.Ticket)

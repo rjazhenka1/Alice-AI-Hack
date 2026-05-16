@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ALGORITHM
-from app.models import Message
+from app.models import KnowledgeBaseLink, Message, Ticket
 
 from conftest import auth_headers, seed_event, seed_role, seed_staff
 
@@ -186,6 +186,82 @@ async def test_ticket_replies_use_ticket_visibility_and_sender(
     )
     assert replies_response.status_code == 200
     assert [item["content"] for item in replies_response.json()] == ["Взял, иду к входу"]
+
+
+async def test_attach_document_to_ticket(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    event = await seed_event(db_session)
+    admin = await seed_staff(db_session, event.id, name="Admin", is_admin=True)
+    await db_session.commit()
+
+    ticket_response = await client.post(
+        f"/events/{event.id}/tickets",
+        json={"title": "Проверить вход"},
+        headers=auth_headers(admin),
+    )
+    ticket_id = ticket_response.json()["id"]
+
+    upload_response = await client.post(
+        f"/events/{event.id}/tickets/{ticket_id}/documents",
+        data={"title": "Схема входа"},
+        files={"file": ("entrance.txt", b"hello", "text/plain")},
+        headers=auth_headers(admin),
+    )
+
+    assert upload_response.status_code == 201
+    document = upload_response.json()
+    assert document["title"] == "Схема входа"
+    assert document["filename"] == "entrance.txt"
+    assert document["size"] == 5
+
+    db_session.expire_all()
+    ticket = await db_session.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    assert ticket is not None
+    assert ticket.documents[0]["title"] == "Схема входа"
+
+
+async def test_upload_knowledge_document(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    event = await seed_event(db_session)
+    admin = await seed_staff(db_session, event.id, name="Admin", is_admin=True)
+    member = await seed_staff(db_session, event.id, name="Member")
+    await db_session.commit()
+
+    forbidden = await client.post(
+        f"/events/{event.id}/knowledge/upload",
+        data={"title": "Регламент"},
+        files={"file": ("rules.pdf", b"pdf", "application/pdf")},
+        headers=auth_headers(member),
+    )
+    assert forbidden.status_code == 403
+
+    response = await client.post(
+        f"/events/{event.id}/knowledge/upload",
+        data={"title": "Регламент", "description": "Основные правила", "tags": "rules, venue"},
+        files={"file": ("rules.pdf", b"pdf", "application/pdf")},
+        headers=auth_headers(admin),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "Регламент"
+    assert body["description"] == "Основные правила"
+    assert body["tags"] == ["rules", "venue"]
+    assert body["url"].endswith("_rules.pdf")
+
+    link = await db_session.scalar(select(KnowledgeBaseLink).where(KnowledgeBaseLink.id == body["id"]))
+    assert link is not None
+    assert link.url == body["url"]
 
 
 async def test_telegram_webhook_text_saves_message_and_queues_reply(
