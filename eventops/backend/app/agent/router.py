@@ -273,7 +273,8 @@ async def _resolve_assignees_with_rag(
 ) -> tuple[list[int], list[int]] | None:
     """Resolve assignee names -> (role_ids, staff_ids).
 
-    RAG API is intentionally left as pseudocode until integration contract is finalized.
+    Non-informational flow uses people+roles RAG (and optional KB context) by contract.
+    Concrete RAG API is intentionally left as pseudocode until integration is finalized.
     """
     role_ids: list[int] = []
     staff_ids: list[int] = []
@@ -301,8 +302,10 @@ async def _resolve_assignees_with_rag(
         unresolved.append(raw)
 
     if unresolved:
-        # PSEUDOCODE (RAG + second-pass verification):
-        # rag_candidates = [rag.search_people(query=name) for name in unresolved]
+        # PSEUDOCODE (non-informational RAG):
+        # people_candidates = [rag.search_people(query=name) for name in unresolved]
+        # role_candidates = [rag.search_roles(query=name) for name in unresolved]
+        # kb_hints = rag.search_docs(keywords=unresolved)  # optional contextual hints
         # selected_ids = llm_verify_entity_ids(input_names=unresolved, candidates=rag_candidates)
         # if selected_ids is None:
         #     return None
@@ -489,7 +492,7 @@ async def handle_command(
                 author_role=response_author_role,
             )
         else:
-            # PSEUDOCODE: docs = rag.search_docs(keywords)
+            # PSEUDOCODE (informational-only source policy): docs = rag.search_docs(keywords)
             docs: list[str] = []
             if not docs:
                 info_answer = planned.answer or "В базе знаний сейчас не нашёл подходящих материалов."

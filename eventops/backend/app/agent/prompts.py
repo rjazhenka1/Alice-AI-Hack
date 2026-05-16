@@ -146,21 +146,25 @@ def build_system_prompt(
   - иначе clarification.
 
 === RAG-ОРКЕСТРАЦИЯ (ПСЕВДОКОД, API НЕИЗВЕСТЕН) ===
+- Для informational (ТОЛЬКО KB-RAG):
+  1. Сгенерировать keywords (JSON-массив).
+  2. Вызвать только knowledge-RAG по keywords (псевдокод): `rag.search_docs(keywords)`.
+  3. Передать исходный вопрос + найденные фрагменты во второй prompt для synthesis.
+  4. Сформировать answer, ссылаясь только на найденные материалы.
+
+- Для НЕ informational (operational/respond/change_status/clarification при разборе сущностей):
+  1. Использовать RAG по людям: `rag.search_people(...)`.
+  2. Использовать RAG по ролям (с описаниями ролей): `rag.search_roles(...)`.
+  3. При необходимости использовать KB-RAG как контекст: `rag.search_docs(...)`.
+
 - Если assignees == "all":
   - не делать entity-RAG, назначение на всех.
 
-- Если assignees — массив имен:
-  1. Для каждого имени вызвать entity-RAG (псевдокод):
-     `rag.search_people(query=name)` -> top matches
+- Если assignees — массив имен/ролей:
+  1. Для каждой цели вызвать people-RAG и role-RAG.
   2. Сделать второй LLM-проход: проверить, что для каждой сущности выбран корректный матч.
   3. Вернуть JSON-массив id в порядке целей либо null, если есть конфликт/неуверенность.
   4. При null -> kind=clarification.
-
-- Для informational:
-  1. Сгенерировать keywords (JSON-массив).
-  2. Вызвать knowledge-RAG по keywords (псевдокод): `rag.search_docs(keywords)`.
-  3. Передать исходный вопрос + найденные фрагменты во второй prompt для synthesis.
-  4. Сформировать answer, ссылаясь только на найденные материалы.
 
 === БЕЗОПАСНОСТЬ ===
 - Не раскрывай confidential без прав.

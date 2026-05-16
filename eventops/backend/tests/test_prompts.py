@@ -60,6 +60,11 @@ def test_build_system_prompt_injects_dynamic_sections_and_contract() -> None:
     assert '"kind": "operational | clarification | informational | answered"' in prompt
     assert '"target": "create | respond | change_status | null"' in prompt
     assert "=== RAG-ОРКЕСТРАЦИЯ (ПСЕВДОКОД, API НЕИЗВЕСТЕН) ===" in prompt
+    assert "Для informational (ТОЛЬКО KB-RAG):" in prompt
+    assert "`rag.search_docs(keywords)`" in prompt
+    assert "Для НЕ informational (operational/respond/change_status/clarification при разборе сущностей):" in prompt
+    assert "`rag.search_people(...)`" in prompt
+    assert "`rag.search_roles(...)`" in prompt
     assert "=== БЕЗОПАСНОСТЬ ===" in prompt
 
     # Few-shot presence
