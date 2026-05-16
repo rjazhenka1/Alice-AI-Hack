@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.agent import agent_command, agent_confirm
-from app.agent.alice import AlicePlanner, PlannedCommand
+from app.agent.alice import AlicePlanner, PlannedCommand, SpeechKitClient
 from app.models import (
     AgentSession,
     ConfidentialityRule,
@@ -55,6 +55,17 @@ async def setup_alice_env():
 
     AlicePlanner._plan_remote = fake_remote  # type: ignore[method-assign]
 
+    async def fake_transcribe(self, *, audio_base64: str, language: str = "ru-RU") -> str:
+        _ = (self, audio_base64, language)
+        return "Нужны люди на входе"
+
+    async def fake_synthesize(self, *, text: str, voice: str = "alena") -> str:
+        _ = (self, text, voice)
+        return "c3luZXRoZXNpcy1iYXNlNjQ="
+
+    SpeechKitClient.transcribe_audio_base64 = fake_transcribe  # type: ignore[method-assign]
+    SpeechKitClient.synthesize_text_base64 = fake_synthesize  # type: ignore[method-assign]
+
     yield
 
 
@@ -76,7 +87,7 @@ async def _get_staff(db: AsyncSession, staff_id: int) -> Staff:
 
 
 @pytest.mark.asyncio
-async def test_command_audio_returns_abi_fallback(db_session: AsyncSession):
+async def test_command_audio_transcribes_and_runs_regular_flow(db_session: AsyncSession):
     event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
     coordinator = await _get_staff(db_session, coordinator_id)
 
