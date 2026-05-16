@@ -118,6 +118,80 @@ def _query_terms(query: str) -> list[str]:
     return result
 
 
+CYRILLIC_TO_LATIN = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "e",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "h",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+    }
+)
+
+
+def _normalize_entity_text(value: str) -> str:
+    lowered = (value or "").strip().lower().replace("ё", "е")
+    transliterated = lowered.translate(CYRILLIC_TO_LATIN)
+    normalized = re.sub(r"[^a-zа-я0-9]+", " ", transliterated)
+    return " ".join(normalized.split())
+
+
+def _entity_tokens(value: str) -> list[str]:
+    tokens = _normalize_entity_text(value).split()
+    normalized_tokens: list[str] = []
+    for token in tokens:
+        if len(token) <= 2:
+            continue
+        # Lightweight Russian case fallback: "Анну" -> "ann", which still
+        # matches "anna" by prefix below.
+        normalized_tokens.append(token.rstrip("aeiouy"))
+    return normalized_tokens
+
+
+def _entity_matches_name(query: str, name: str) -> bool:
+    normalized_query = _normalize_entity_text(query)
+    normalized_name = _normalize_entity_text(name)
+    if not normalized_query or not normalized_name:
+        return False
+    if normalized_query in normalized_name or normalized_name in normalized_query:
+        return True
+
+    query_tokens = _entity_tokens(query)
+    name_tokens = _entity_tokens(name)
+    return bool(query_tokens) and all(
+        any(name_token.startswith(query_token) or query_token.startswith(name_token) for name_token in name_tokens)
+        for query_token in query_tokens
+    )
+
+
 def _chunk_matches_query(chunk: dict[str, Any], query: str) -> bool:
     terms = _query_terms(query)
     if not terms:
@@ -461,11 +535,10 @@ async def _resolve_assignees_with_rag(
             role_ids.append(int(role_match.id))
             continue
 
-        staff_match = await db.scalar(
-            select(Staff).where(Staff.event_id == event_id, Staff.name.ilike(raw))
-        )
-        if staff_match is not None:
-            staff_ids.append(int(staff_match.id))
+        staff_result = await db.execute(select(Staff).where(Staff.event_id == event_id).order_by(Staff.id.asc()))
+        staff_matches = [staff for staff in staff_result.scalars().all() if _entity_matches_name(raw, staff.name)]
+        if len(staff_matches) == 1:
+            staff_ids.append(int(staff_matches[0].id))
             continue
 
         unresolved.append(raw)
@@ -503,7 +576,7 @@ async def _find_staff_for_query(db: AsyncSession, *, event_id: int, query: str) 
         .order_by(Staff.id.asc())
     )
     candidates = list(result.scalars().all())
-    matches = [staff for staff in candidates if normalized in str(staff.name).lower()]
+    matches = [staff for staff in candidates if normalized in str(staff.name).lower() or _entity_matches_name(normalized, staff.name)]
     if len(matches) == 1:
         return matches[0]
     return None
