@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .alice import AlicePlanner
-from .prompts import build_system_prompt
+from .prompts import build_rag_informational_synthesis_prompt, build_system_prompt
 from .tools import AgentTools
 from ..rag import search_document_chunks
 from ..models import (
@@ -201,7 +201,7 @@ def _relevant_excerpt(content: str, query: str, *, max_len: int = KB_ANSWER_EXCE
 def _format_kb_search_answer(chunks: list[dict[str, Any]], query: str) -> str:
     lines: list[str] = []
     seen: set[tuple[str, str]] = set()
-    filtered_chunks = [chunk for chunk in chunks if _chunk_matches_query(chunk, query)]
+    filtered_chunks = _filter_kb_chunks_for_query(chunks, query)
     if not filtered_chunks:
         return "В базе знаний сейчас не нашла точной информации по этому запросу."
 
@@ -221,6 +221,20 @@ def _format_kb_search_answer(chunks: list[dict[str, Any]], query: str) -> str:
     if len(answer) <= KB_ANSWER_MAX_CHARS:
         return answer
     return answer[:KB_ANSWER_MAX_CHARS].rstrip() + "\n..."
+
+
+def _filter_kb_chunks_for_query(chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    return [chunk for chunk in chunks if _chunk_matches_query(chunk, query)]
+
+
+def _kb_fragments_for_synthesis(chunks: list[dict[str, Any]], query: str) -> list[str]:
+    fragments: list[str] = []
+    for chunk in chunks[:5]:
+        source_title = str(chunk.get("source_title") or "Источник")
+        source_url = str(chunk.get("source_url") or "no-url")
+        excerpt = _relevant_excerpt(str(chunk.get("content") or ""), query, max_len=900)
+        fragments.append(f"{source_title}: {excerpt}. Источник: {source_url}")
+    return fragments
 
 
 def _is_ticket_summary_query(text: str) -> bool:
@@ -720,6 +734,7 @@ async def handle_command(
     elif planned.kind == "knowledge_base":
         search_query = " ".join([text, *(planned.keywords or [])]).strip()
         docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5)
+        exact_docs = _filter_kb_chunks_for_query(docs, text)
         if not docs and not planned.keywords:
             response = AgentCommandResponse(
                 action="question_asked",
@@ -729,10 +744,15 @@ async def handle_command(
                 author_role=response_author_role,
             )
         else:
-            if not docs:
-                info_answer = planned.answer or "В базе знаний сейчас не нашёл подходящих материалов."
+            if not exact_docs:
+                info_answer = "В базе знаний сейчас не нашла точной информации по этому запросу."
             else:
-                info_answer = planned.answer or _format_kb_search_answer(docs, text)
+                synthesized = await planner.synthesize_knowledge_answer(
+                    question=text,
+                    rag_fragments=_kb_fragments_for_synthesis(exact_docs, text),
+                    system_prompt=build_rag_informational_synthesis_prompt(),
+                )
+                info_answer = synthesized or _format_kb_search_answer(exact_docs, text)
             response = AgentCommandResponse(
                 action="answered",
                 message=info_answer,

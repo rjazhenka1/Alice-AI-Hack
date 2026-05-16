@@ -59,6 +59,14 @@ async def setup_alice_env():
 
     AlicePlanner._plan_remote = fake_remote  # type: ignore[method-assign]
 
+    async def fake_synthesize_knowledge(self, *, question: str, rag_fragments: list[str], system_prompt: str):
+        _ = (self, question, system_prompt)
+        if not rag_fragments:
+            return None
+        return rag_fragments[0]
+
+    AlicePlanner.synthesize_knowledge_answer = fake_synthesize_knowledge  # type: ignore[method-assign]
+
     async def fake_transcribe(self, *, audio_base64: str, language: str = "ru-RU") -> str:
         _ = (self, audio_base64, language)
         return "Нужны люди на входе"
