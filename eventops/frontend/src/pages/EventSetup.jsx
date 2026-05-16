@@ -19,6 +19,11 @@ const emptyKnowledgeLink = {
   tags: "",
   visibility: "public",
 };
+const knowledgeModes = [
+  { id: "file", label: "Файл" },
+  { id: "link", label: "Ссылка" },
+  { id: "text", label: "Текст" },
+];
 const emptyConfidentialityRule = {
   category: "",
   description: "",
@@ -78,8 +83,11 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
   const [importText, setImportText] = useState("");
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [knowledgeFile, setKnowledgeFile] = useState(null);
   const [knowledgeForm, setKnowledgeForm] = useState(emptyKnowledgeLink);
   const [knowledgeItems, setKnowledgeItems] = useState([]);
+  const [knowledgeMode, setKnowledgeMode] = useState("file");
+  const [knowledgeText, setKnowledgeText] = useState("");
   const [ruleForm, setRuleForm] = useState(emptyConfidentialityRule);
   const [roleForm, setRoleForm] = useState(emptyRole);
   const [roles, setRoles] = useState([]);
@@ -222,52 +230,83 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
     }, "Сотрудник добавлен");
   };
 
-  const addKnowledgeFile = (changeEvent) => {
-    const files = Array.from(changeEvent.target.files || []);
-
-    if (!event?.id || files.length === 0) {
-      changeEvent.target.value = "";
-      return;
-    }
-
-    save(async () => {
-      const created = [];
-
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("title", file.name);
-        formData.append("visibility", "public");
-        formData.append("is_active", "true");
-        created.push(await api.uploadKnowledgeDocument(event.id, formData));
-      }
-
-      setKnowledgeItems((items) => [...items, ...created]);
-    }, "Материалы загружены");
-    changeEvent.target.value = "";
+  const resetKnowledgeForm = () => {
+    setKnowledgeForm(emptyKnowledgeLink);
+    setKnowledgeFile(null);
+    setKnowledgeText("");
   };
 
-  const addKnowledgeLink = (submitEvent) => {
+  const addKnowledge = (submitEvent) => {
     submitEvent.preventDefault();
-    const title = knowledgeForm.title.trim();
-    const url = knowledgeForm.url.trim();
 
-    if (!event?.id || !title || !url) {
+    if (!event?.id) {
+      return;
+    }
+
+    const title = knowledgeForm.title.trim();
+    const description = nullable(knowledgeForm.description);
+    const tags = knowledgeForm.tags.trim();
+    const visibility = knowledgeForm.visibility;
+
+    if (knowledgeMode === "file" && !knowledgeFile) {
+      return;
+    }
+    if (knowledgeMode !== "file" && !title) {
+      return;
+    }
+    if (knowledgeMode === "link" && !knowledgeForm.url.trim()) {
+      return;
+    }
+    if (knowledgeMode === "text" && !knowledgeText.trim()) {
       return;
     }
 
     save(async () => {
-      const created = await api.createKnowledgeLink(event.id, {
-        title,
-        url,
-        description: nullable(knowledgeForm.description),
-        tags: parseTags(knowledgeForm.tags),
-        visibility: knowledgeForm.visibility,
-        is_active: true,
-      });
+      let created;
+
+      if (knowledgeMode === "file") {
+        const formData = new FormData();
+        formData.append("file", knowledgeFile);
+        formData.append("title", title || knowledgeFile.name);
+        if (description) {
+          formData.append("description", description);
+        }
+        if (tags) {
+          formData.append("tags", tags);
+        }
+        formData.append("visibility", visibility);
+        formData.append("is_active", "true");
+        created = await api.uploadKnowledgeDocument(event.id, formData);
+      } else if (knowledgeMode === "link") {
+        created = await api.createKnowledgeLink(event.id, {
+          title,
+          url: knowledgeForm.url.trim(),
+          description,
+          tags: parseTags(knowledgeForm.tags),
+          visibility,
+          is_active: true,
+        });
+      } else {
+        const file = new File([knowledgeText.trim()], `${title}.txt`, {
+          type: "text/plain",
+        });
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("title", title);
+        if (description) {
+          formData.append("description", description);
+        }
+        if (tags) {
+          formData.append("tags", tags);
+        }
+        formData.append("visibility", visibility);
+        formData.append("is_active", "true");
+        created = await api.uploadKnowledgeDocument(event.id, formData);
+      }
+
       setKnowledgeItems((items) => [...items, created]);
-      setKnowledgeForm(emptyKnowledgeLink);
-    }, "Материал добавлен");
+      resetKnowledgeForm();
+    }, "Материал добавлен в базу знаний");
   };
 
   const addConfidentialityRule = (submitEvent) => {
@@ -443,29 +482,55 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
           </Section>
 
           <Section title="База знаний Алисы">
-            <div className="space-y-3">
-              <label className="block rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-sm font-medium text-slate-700">
-                Загрузить файл
-                <input
-                  accept=".pdf,.txt,.mp3,.mp4,.jpeg,.jpg,.png,application/pdf,text/plain,audio/mpeg,video/mp4,image/jpeg,image/png"
-                  className="sr-only"
-                  multiple
-                  type="file"
-                  onChange={addKnowledgeFile}
-                />
-              </label>
-              <form className="space-y-2" onSubmit={addKnowledgeLink}>
-                <input
-                  className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
-                  placeholder="Название материала"
-                  value={knowledgeForm.title}
-                  onChange={(changeEvent) =>
-                    setKnowledgeForm((form) => ({
-                      ...form,
-                      title: changeEvent.target.value,
-                    }))
-                  }
-                />
+            <form className="space-y-3" onSubmit={addKnowledge}>
+              <div className="grid grid-cols-3 gap-2">
+                {knowledgeModes.map((mode) => (
+                  <button
+                    className={`h-9 rounded-lg border text-xs font-semibold ${
+                      knowledgeMode === mode.id
+                        ? "border-violet-700 bg-violet-700 text-white"
+                        : "border-slate-200 bg-white text-slate-600"
+                    }`}
+                    key={mode.id}
+                    type="button"
+                    onClick={() => {
+                      setKnowledgeMode(mode.id);
+                      setKnowledgeFile(null);
+                    }}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                placeholder={knowledgeMode === "file" ? "Название материала, можно оставить пустым" : "Название материала"}
+                value={knowledgeForm.title}
+                onChange={(changeEvent) =>
+                  setKnowledgeForm((form) => ({
+                    ...form,
+                    title: changeEvent.target.value,
+                  }))
+                }
+              />
+
+              {knowledgeMode === "file" ? (
+                <label className="block rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-sm font-medium text-slate-700">
+                  {knowledgeFile ? knowledgeFile.name : "Выбрать файл"}
+                  <input
+                    accept=".pdf,.txt,.mp3,.mp4,.jpeg,.jpg,.png,application/pdf,text/plain,audio/mpeg,video/mp4,image/jpeg,image/png"
+                    className="sr-only"
+                    type="file"
+                    onChange={(changeEvent) => {
+                      setKnowledgeFile(changeEvent.target.files?.[0] || null);
+                      changeEvent.target.value = "";
+                    }}
+                  />
+                </label>
+              ) : null}
+
+              {knowledgeMode === "link" ? (
                 <input
                   className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
                   placeholder="Ссылка на регламент, карту или документ"
@@ -477,79 +542,99 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                     }))
                   }
                 />
+              ) : null}
+
+              {knowledgeMode === "text" ? (
                 <textarea
-                  className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
-                  placeholder="Что в этом материале"
-                  value={knowledgeForm.description}
+                  className="min-h-32 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
+                  placeholder="Текст, который Алиса должна знать и искать"
+                  value={knowledgeText}
+                  onChange={(changeEvent) => setKnowledgeText(changeEvent.target.value)}
+                />
+              ) : null}
+
+              <textarea
+                className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
+                placeholder={
+                  knowledgeMode === "file"
+                    ? "Описание файла. Для скриншотов лучше кратко написать, что на изображении"
+                    : "Краткое описание материала"
+                }
+                value={knowledgeForm.description}
+                onChange={(changeEvent) =>
+                  setKnowledgeForm((form) => ({
+                    ...form,
+                    description: changeEvent.target.value,
+                  }))
+                }
+              />
+
+              <div className="grid grid-cols-[1fr_120px] gap-2">
+                <input
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                  placeholder="Теги через запятую"
+                  value={knowledgeForm.tags}
                   onChange={(changeEvent) =>
                     setKnowledgeForm((form) => ({
                       ...form,
-                      description: changeEvent.target.value,
+                      tags: changeEvent.target.value,
                     }))
                   }
                 />
-                <div className="grid grid-cols-[1fr_120px] gap-2">
-                  <input
-                    className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
-                    placeholder="Теги через запятую"
-                    value={knowledgeForm.tags}
-                    onChange={(changeEvent) =>
-                      setKnowledgeForm((form) => ({
-                        ...form,
-                        tags: changeEvent.target.value,
-                      }))
-                    }
-                  />
-                  <select
-                    className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
-                    value={knowledgeForm.visibility}
-                    onChange={(changeEvent) =>
-                      setKnowledgeForm((form) => ({
-                        ...form,
-                        visibility: changeEvent.target.value,
-                      }))
-                    }
-                  >
-                    {visibilityOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  className="h-11 w-full rounded-lg bg-violet-700 px-4 text-sm font-semibold text-white disabled:opacity-60"
-                  disabled={
-                    isSaving || !knowledgeForm.title.trim() || !knowledgeForm.url.trim()
+                <select
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
+                  value={knowledgeForm.visibility}
+                  onChange={(changeEvent) =>
+                    setKnowledgeForm((form) => ({
+                      ...form,
+                      visibility: changeEvent.target.value,
+                    }))
                   }
-                  type="submit"
                 >
-                  Добавить материал
-                </button>
-              </form>
-              {knowledgeItems.length > 0 ? (
-                <div className="space-y-2">
-                  {knowledgeItems.map((item) => (
-                    <div
-                      className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
-                      key={item.id}
-                    >
-                      <div className="font-medium text-slate-900">{item.title}</div>
-                      <div className="mt-1 break-all text-xs text-slate-500">{item.url}</div>
-                      {item.description ? (
-                        <div className="mt-1 text-xs text-slate-600">
-                          {item.description}
-                        </div>
-                      ) : null}
-                    </div>
+                  {visibilityOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
                   ))}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  Материалов базы знаний пока нет.
-                </p>
-              )}
-            </div>
+                </select>
+              </div>
+
+              <button
+                className="h-11 w-full rounded-lg bg-violet-700 px-4 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={
+                  isSaving ||
+                  (knowledgeMode === "file" && !knowledgeFile) ||
+                  (knowledgeMode === "link" && (!knowledgeForm.title.trim() || !knowledgeForm.url.trim())) ||
+                  (knowledgeMode === "text" && (!knowledgeForm.title.trim() || !knowledgeText.trim()))
+                }
+                type="submit"
+              >
+                Добавить материал
+              </button>
+            </form>
+
+            {knowledgeItems.length > 0 ? (
+              <div className="mt-4 space-y-2">
+                {knowledgeItems.map((item) => (
+                  <div
+                    className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                    key={item.id}
+                  >
+                    <div className="font-medium text-slate-900">{item.title}</div>
+                    <div className="mt-1 break-all text-xs text-slate-500">{item.url}</div>
+                    {item.description ? (
+                      <div className="mt-1 text-xs text-slate-600">
+                        {item.description}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-slate-500">
+                Материалов базы знаний пока нет.
+              </p>
+            )}
           </Section>
 
           <Section title="Конфиденциальность">

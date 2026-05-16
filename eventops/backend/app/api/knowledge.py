@@ -84,6 +84,22 @@ async def create_knowledge_link(
     await _require_admin(current_staff)
     link = KnowledgeBaseLink(event_id=event_id, **payload.model_dump())
     db.add(link)
+    await db.flush()
+    index_text = "\n".join(
+        part
+        for part in [link.title, link.description or "", link.url]
+        if part
+    ).strip()
+    if index_text:
+        await index_document_chunks(
+            db,
+            event_id=event_id,
+            content=index_text.encode("utf-8"),
+            source_title=link.title,
+            source_url=link.url,
+            knowledge_base_link_id=link.id,
+            metadata={"content_type": "text/plain", "source": "link_description"},
+        )
     await db.commit()
     await db.refresh(link)
     return link
@@ -140,6 +156,16 @@ async def upload_knowledge_document(
         knowledge_base_link_id=link.id,
         metadata={"filename": filename, "content_type": file.content_type},
     )
+    if description:
+        await index_document_chunks(
+            db,
+            event_id=event_id,
+            content=description.encode("utf-8"),
+            source_title=f"{link.title} — описание",
+            source_url=link.url,
+            knowledge_base_link_id=link.id,
+            metadata={"filename": filename, "content_type": "text/plain", "source": "manual_description"},
+        )
     await db.commit()
     await db.refresh(link)
     return link
