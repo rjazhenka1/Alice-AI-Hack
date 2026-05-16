@@ -1,3 +1,34 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --alice-violet: #6d28d9;
+    --alice-blue: #2563eb;
+    --alice-cyan: #06b6d4;
+    --alice-ink: #111827;
+  }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at 18% 0%, rgba(124, 58, 237, 0.18), transparent 32rem),
+      radial-gradient(circle at 100% 18%, rgba(37, 99, 235, 0.14), transparent 28rem),
+      #f3f0ff;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .bg-violet-700 {
+    background-image: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
+  }
+}

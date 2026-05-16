@@ -799,6 +799,10 @@ components:
           nullable: true
           minLength: 1
           description: Base64-encoded audio. В SpeechKit-ветке используется как вход для STT.
+        audio_mime_type:
+          type: string
+          nullable: true
+          description: MIME type исходной записи браузера, например audio/webm;codecs=opus
         context:
           type: array
           nullable: true
@@ -818,6 +822,10 @@ components:
           type: string
           minLength: 1
           description: Base64-encoded audio payload
+        audio_mime_type:
+          type: string
+          nullable: true
+          description: MIME type исходной записи браузера, например audio/webm;codecs=opus
         language:
           type: string
           default: ru-RU

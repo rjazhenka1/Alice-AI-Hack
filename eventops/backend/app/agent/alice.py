@@ -6,6 +6,9 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 import base64
 import binascii
@@ -72,12 +75,111 @@ class SpeechKitClient:
         except (binascii.Error, ValueError) as exc:
             raise ValueError("Invalid audio_base64") from exc
 
-    async def transcribe_audio_base64(self, *, audio_base64: str, language: str = "ru-RU") -> str:
+    @staticmethod
+    def _speechkit_format(audio_mime_type: str | None) -> str:
+        normalized = (audio_mime_type or "").split(";", maxsplit=1)[0].strip().lower()
+        if normalized in {"audio/ogg", "audio/oga"}:
+            return "oggopus"
+        if normalized in {"audio/x-wav", "audio/wav", "audio/wave"}:
+            return "lpcm"
+        if normalized == "audio/mpeg":
+            return "mp3"
+        return "oggopus"
+
+    @staticmethod
+    def _needs_oggopus_conversion(audio_mime_type: str | None) -> bool:
+        normalized = (audio_mime_type or "").split(";", maxsplit=1)[0].strip().lower()
+        return normalized in {"audio/webm", "audio/mp4", "video/mp4"}
+
+    @staticmethod
+    def _convert_to_oggopus(audio: bytes, audio_mime_type: str | None) -> bytes:
+        if not SpeechKitClient._needs_oggopus_conversion(audio_mime_type):
+            return audio
+
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("ffmpeg is required to transcribe browser audio")
+
+        suffix = ".webm"
+        normalized = (audio_mime_type or "").split(";", maxsplit=1)[0].strip().lower()
+        if normalized in {"audio/mp4", "video/mp4"}:
+            suffix = ".mp4"
+
+        with tempfile.NamedTemporaryFile(suffix=suffix) as source:
+            with tempfile.NamedTemporaryFile(suffix=".ogg") as target:
+                source.write(audio)
+                source.flush()
+                command = [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    source.name,
+                    "-vn",
+                    "-acodec",
+                    "libopus",
+                    "-ar",
+                    "48000",
+                    "-ac",
+                    "1",
+                    "-b:a",
+                    "48k",
+                    target.name,
+                ]
+                try:
+                    subprocess.run(command, check=True, capture_output=True)
+                except subprocess.CalledProcessError as exc:
+                    stderr = exc.stderr.decode("utf-8", errors="ignore").strip()
+                    raise RuntimeError(f"ffmpeg failed to convert audio: {stderr}") from exc
+                target.seek(0)
+                return target.read()
+
+    @staticmethod
+    def _normalize_transcription_text(text: str) -> str:
+        words = (text or "").split()
+        if not words:
+            return ""
+
+        deduped: list[str] = []
+        index = 0
+        while index < len(words):
+            repeated = False
+            max_window = min(8, (len(words) - index) // 2)
+            for window in range(max_window, 0, -1):
+                left = [word.lower() for word in words[index : index + window]]
+                right = [word.lower() for word in words[index + window : index + window * 2]]
+                if left == right:
+                    deduped.extend(words[index : index + window])
+                    index += window * 2
+                    repeated = True
+                    break
+            if not repeated:
+                deduped.append(words[index])
+                index += 1
+
+        half = len(deduped) // 2
+        if half > 0 and len(deduped) % 2 == 0:
+            if [word.lower() for word in deduped[:half]] == [word.lower() for word in deduped[half:]]:
+                deduped = deduped[:half]
+
+        return " ".join(deduped).strip()
+
+    async def transcribe_audio_base64(
+        self,
+        *,
+        audio_base64: str,
+        language: str = "ru-RU",
+        audio_mime_type: str | None = None,
+    ) -> str:
         audio = self._decode_audio(audio_base64)
+        audio = self._convert_to_oggopus(audio, audio_mime_type)
+        audio_format = self._speechkit_format(audio_mime_type)
         start = time.perf_counter()
         params = {
             "folderId": self._folder_id(),
             "lang": language,
+            "format": audio_format,
         }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -90,17 +192,39 @@ class SpeechKitClient:
                 response.raise_for_status()
                 data = response.json()
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("speechkit_stt_ok latency_ms=%.1f language=%s", elapsed_ms, language)
+            logger.info(
+                "speechkit_stt_ok latency_ms=%.1f language=%s format=%s",
+                elapsed_ms,
+                language,
+                audio_format,
+            )
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.warning("speechkit_stt_failed latency_ms=%.1f language=%s error=%s", elapsed_ms, language, exc)
+            logger.warning(
+                "speechkit_stt_failed latency_ms=%.1f language=%s format=%s error=%s",
+                elapsed_ms,
+                language,
+                audio_format,
+                exc,
+            )
             raise RuntimeError("SpeechKit STT request failed") from exc
 
         chunks = data.get("chunks")
         if isinstance(chunks, list) and chunks:
-            text = " ".join(str(chunk.get("alternatives", [{}])[0].get("text", "")).strip() for chunk in chunks)
+            parts: list[str] = []
+            previous = ""
+            for chunk in chunks:
+                part = str(chunk.get("alternatives", [{}])[0].get("text", "")).strip()
+                if not part:
+                    continue
+                if part.lower() == previous.lower():
+                    continue
+                parts.append(part)
+                previous = part
+            text = " ".join(parts)
         else:
             text = str(data.get("result", "")).strip()
+        text = self._normalize_transcription_text(text)
         if not text:
             raise RuntimeError("SpeechKit STT returned empty transcription")
         return text

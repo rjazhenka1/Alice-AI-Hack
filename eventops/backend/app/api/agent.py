@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import os
+from pathlib import Path
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +30,35 @@ from ..schemas import (
 router = APIRouter(prefix="/events/{event_id}/agent", tags=["agent"])
 
 
+def _agent_audio_dir() -> Path:
+    return Path(os.getenv("AGENT_AUDIO_DIR", "storage/agent_audio"))
+
+
+def _audio_extension(audio_mime_type: str | None) -> str:
+    normalized = (audio_mime_type or "").split(";", maxsplit=1)[0].strip().lower()
+    if normalized == "audio/webm":
+        return ".webm"
+    if normalized in {"audio/ogg", "audio/oga"}:
+        return ".oga"
+    if normalized in {"audio/mp4", "video/mp4"}:
+        return ".mp4"
+    if normalized in {"audio/wav", "audio/x-wav", "audio/wave"}:
+        return ".wav"
+    return ".oga"
+
+
+def _save_agent_audio(event_id: int, staff_id: int, audio_base64: str, audio_mime_type: str | None = None) -> str:
+    try:
+        audio = base64.b64decode(audio_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid audio_base64") from exc
+
+    path = _agent_audio_dir() / str(event_id) / f"{staff_id}_{uuid4().hex}{_audio_extension(audio_mime_type)}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(audio)
+    return str(path)
+
+
 @router.post("/command", response_model=AgentCommandResponse)
 async def agent_command(
     event_id: int,
@@ -36,10 +71,20 @@ async def agent_command(
     has_text = bool(text)
     has_audio = bool((payload.audio_base64 or "").strip())
     had_both_sources = has_text and has_audio
+    audio_file: str | None = None
 
     if has_audio and not has_text:
         try:
-            text = await speechkit.transcribe_audio_base64(audio_base64=payload.audio_base64 or "")
+            audio_file = _save_agent_audio(
+                event_id,
+                current_staff.id,
+                payload.audio_base64 or "",
+                payload.audio_mime_type,
+            )
+            text = await speechkit.transcribe_audio_base64(
+                audio_base64=payload.audio_base64 or "",
+                audio_mime_type=payload.audio_mime_type,
+            )
             has_text = bool(text)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
@@ -53,7 +98,17 @@ async def agent_command(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Provide only one command source: text or audio_base64")
 
     try:
-        response = await handle_command(db=db, event_id=event_id, current_staff=current_staff, text=text)
+        response = await handle_command(
+            db=db,
+            event_id=event_id,
+            current_staff=current_staff,
+            text=text,
+            source="agent_audio" if audio_file else "agent_text",
+            audio_file=audio_file,
+            client_context=[item.model_dump(exclude_none=True) for item in payload.context or []] if payload.context is not None else None,
+            mode=payload.mode,
+        )
+        response.transcript = text if audio_file else response.transcript
         tts_source = (response.model_response or response.message or "").strip()
         try:
             response.audio = AudioSynthesis(
@@ -88,6 +143,7 @@ async def agent_transcribe(
         text = await SpeechKitClient().transcribe_audio_base64(
             audio_base64=payload.audio_base64,
             language=payload.language,
+            audio_mime_type=payload.audio_mime_type,
         )
         return TranscriptionResponse(text=text, status="ok")
     except ValueError as exc:

@@ -15,8 +15,10 @@ function withQuery(path, params = {}) {
 
 async function request(path, options = {}) {
   const token = localStorage.getItem("eventops_token");
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers = {
-    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.body && !isFormData ? { "Content-Type": "application/json" } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...options.headers,
   };
@@ -24,7 +26,11 @@ async function request(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
     headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: isFormData
+      ? options.body
+      : options.body
+        ? JSON.stringify(options.body)
+        : undefined,
   });
 
   if (!response.ok) {
@@ -92,6 +98,18 @@ export const api = {
       method: "PATCH",
       body: payload,
     }),
+  getTicketReplies: (eventId, ticketId) =>
+    request(`/events/${eventId}/tickets/${ticketId}/replies`),
+  createTicketReply: (eventId, ticketId, payload) =>
+    request(`/events/${eventId}/tickets/${ticketId}/replies`, {
+      method: "POST",
+      body: payload,
+    }),
+  uploadTicketDocument: (eventId, ticketId, formData) =>
+    request(`/events/${eventId}/tickets/${ticketId}/documents`, {
+      method: "POST",
+      body: formData,
+    }),
   assignTicket: (eventId, ticketId, staffIds) =>
     request(`/events/${eventId}/tickets/${ticketId}/assign`, {
       method: "POST",
@@ -113,8 +131,41 @@ export const api = {
     request(`/events/${eventId}/messages/${messageId}/read`, {
       method: "PATCH",
     }),
+  getKnowledge: (eventId) => request(`/events/${eventId}/knowledge`),
+  createKnowledgeLink: (eventId, payload) =>
+    request(`/events/${eventId}/knowledge`, {
+      method: "POST",
+      body: payload,
+    }),
+  uploadKnowledgeDocument: (eventId, formData) =>
+    request(`/events/${eventId}/knowledge/upload`, {
+      method: "POST",
+      body: formData,
+    }),
+  updateKnowledgeLink: (eventId, linkId, payload) =>
+    request(`/events/${eventId}/knowledge/${linkId}`, {
+      method: "PATCH",
+      body: payload,
+    }),
+  getConfidentialityRules: (eventId) =>
+    request(`/events/${eventId}/confidentiality-rules`),
+  createConfidentialityRule: (eventId, payload) =>
+    request(`/events/${eventId}/confidentiality-rules`, {
+      method: "POST",
+      body: payload,
+    }),
+  updateConfidentialityRule: (eventId, ruleId, payload) =>
+    request(`/events/${eventId}/confidentiality-rules/${ruleId}`, {
+      method: "PATCH",
+      body: payload,
+    }),
   sendCommand: (eventId, payload) =>
     request(`/events/${eventId}/agent/command`, {
+      method: "POST",
+      body: payload,
+    }),
+  transcribeAudio: (eventId, payload) =>
+    request(`/events/${eventId}/agent/transcribe`, {
       method: "POST",
       body: payload,
     }),

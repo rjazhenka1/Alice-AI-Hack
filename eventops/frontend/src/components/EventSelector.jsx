@@ -9,7 +9,7 @@ export default function EventSelector({ eventId, events, onChange }) {
 
   if (events.length === 1) {
     return (
-      <span className="max-w-32 truncate rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-700">
+      <span className="max-w-32 truncate rounded-full bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700">
         {events[0].name}
       </span>
     );

@@ -1,6 +1,11 @@
 import { useRef, useState } from "react";
 
-const audioTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+const audioTypes = [
+  "audio/ogg;codecs=opus",
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+];
 
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -27,6 +32,9 @@ export default function ChatPanel({
   disabled = false,
   isLoading = false,
   mode = "volunteer",
+  replyTarget = null,
+  onCancelReply,
+  onReply,
   onSendAudio,
   onSendText,
 }) {
@@ -44,7 +52,11 @@ export default function ChatPanel({
       return;
     }
 
-    onSendText(value);
+    if (replyTarget && onReply) {
+      onReply(replyTarget, value);
+    } else {
+      onSendText(value);
+    }
     setText("");
   };
 
@@ -88,7 +100,12 @@ export default function ChatPanel({
           type: recorder.mimeType || "audio/webm",
         });
         const audioBase64 = await blobToBase64(blob);
-        onSendAudio({ audioBase64, mimeType: blob.type });
+        const audioUrl = URL.createObjectURL(blob);
+        onSendAudio({
+          audioBase64,
+          audioUrl,
+          mimeType: blob.type,
+        });
         setVoiceStatus("Голосовое отправлено Алисе.");
       };
 
@@ -109,7 +126,7 @@ export default function ChatPanel({
     <section className="flex min-h-[calc(100vh-180px)] flex-col">
       <div className="flex-1 space-y-3 overflow-y-auto pb-4">
         {mode === "admin" ? (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800">
             Вопросы волонтёров, которые Алиса не закрыла сама, появятся здесь.
           </div>
         ) : null}
@@ -124,14 +141,23 @@ export default function ChatPanel({
           <article
             className={`max-w-[88%] rounded-lg px-3 py-2 text-sm ${
               message.from === "me"
-                ? "ml-auto bg-slate-950 text-white"
+                ? "ml-auto bg-violet-700 text-white"
                 : message.from === "admin"
-                  ? "bg-amber-50 text-amber-900"
+                  ? "bg-violet-50 text-violet-900"
                   : "bg-slate-100 text-slate-900"
             }`}
             key={message.id}
           >
             <p>{message.text}</p>
+            {message.audioUrl ? (
+              <audio
+                className="mt-2 w-full max-w-56"
+                controls
+                src={message.audioUrl}
+              >
+                Твой браузер не поддерживает аудио.
+              </audio>
+            ) : null}
             {message.createdAt ? (
               <p
                 className={`mt-1 text-[11px] ${
@@ -141,6 +167,15 @@ export default function ChatPanel({
                 {formatTime(message.createdAt)}
               </p>
             ) : null}
+            {mode === "admin" && message.canReply ? (
+              <button
+                className="mt-2 rounded-md bg-violet-100 px-2 py-1 text-xs font-medium text-violet-900"
+                type="button"
+                onClick={() => onReply?.(message, null)}
+              >
+                Ответить
+              </button>
+            ) : null}
           </article>
         ))}
       </div>
@@ -149,17 +184,35 @@ export default function ChatPanel({
         className="sticky bottom-16 -mx-4 border-t border-slate-200 bg-white px-4 py-3"
         onSubmit={submit}
       >
-        <div className="grid grid-cols-[1fr_48px] gap-2">
+        {replyTarget ? (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-violet-50 px-3 py-2 text-xs text-violet-900">
+            <span className="min-w-0 truncate">
+              Ответ: {replyTarget.senderName || "волонтёру"}
+            </span>
+            <button
+              className="shrink-0 font-semibold"
+              type="button"
+              onClick={onCancelReply}
+            >
+              Отмена
+            </button>
+          </div>
+        ) : null}
+        <div className="grid grid-cols-[1fr_64px] gap-2">
           <input
-            className="h-12 min-w-0 rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-teal-600"
+            className="h-12 min-w-0 rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-violet-600"
             disabled={disabled}
-            placeholder="Спросить Алису"
+            placeholder={replyTarget ? "Ответить волонтёру" : "Спросить Алису"}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
           <button
-            className={`h-12 rounded-lg text-sm font-semibold text-white disabled:opacity-60 ${
-              text.trim() ? "bg-slate-950" : isRecording ? "bg-red-600" : "bg-teal-700"
+            className={`h-12 rounded-lg text-sm font-semibold disabled:opacity-60 ${
+              text.trim()
+                ? "border border-violet-200 bg-white text-violet-700"
+                : isRecording
+                  ? "bg-red-600 text-white"
+                  : "bg-violet-700 text-white"
             }`}
             disabled={disabled || isLoading}
             type={text.trim() ? "submit" : "button"}

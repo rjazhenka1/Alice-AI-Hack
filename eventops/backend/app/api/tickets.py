@@ -190,7 +190,20 @@ async def list_tickets(
         .where(visible_clause)
         .order_by(_priority_order(), Ticket.updated_at.desc(), Ticket.id.desc())
     )
-    return list(result.all())
+    tickets = list(result.all())
+    repaired = False
+    for ticket in tickets:
+        if ticket.created_at is None:
+            ticket.created_at = datetime.now(UTC).replace(tzinfo=None)
+            repaired = True
+        if ticket.updated_at is None:
+            ticket.updated_at = ticket.created_at
+            repaired = True
+
+    if repaired:
+        await db.commit()
+
+    return tickets
 
 
 @router.post("", response_model=schemas.Ticket, status_code=status.HTTP_201_CREATED)
@@ -232,10 +245,23 @@ async def update_ticket(
     )
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if not current_staff.is_admin and ticket.created_by_id != current_staff.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin or creator can update ticket")
 
     data = payload.model_dump(exclude_unset=True)
+    is_assignee = bool(
+        await db.scalar(
+            select(TicketAssignment.id)
+            .where(TicketAssignment.ticket_id == ticket.id)
+            .where(TicketAssignment.staff_id == current_staff.id)
+            .limit(1)
+        )
+    )
+    if not current_staff.is_admin and ticket.created_by_id != current_staff.id:
+        assignee_status_only = is_assignee and set(data.keys()) <= {"status"}
+        if not assignee_status_only:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admin, creator, or assignee status update is allowed",
+            )
     if "assignee_role_id" in data:
         await _ensure_role(db, event_id, data["assignee_role_id"])
     if "visibility" in data:
@@ -245,6 +271,12 @@ async def update_ticket(
         setattr(ticket, key, value)
     if previous_messages is not None:
         ticket.previous_messages = previous_messages
+
+    if is_assignee and "status" in data:
+        if data["status"] in {TicketStatus.resolved, TicketStatus.closed}:
+            current_staff.status = StaffStatus.free
+        elif data["status"] == TicketStatus.in_progress:
+            current_staff.status = StaffStatus.on_task
 
     await db.commit()
     loaded = await _load_ticket(db, event_id, ticket.id)
@@ -287,16 +319,18 @@ async def create_ticket_reply(
         raise HTTPException(status_code=404, detail="Ticket not found")
     await _ensure_can_use_visibility(db, current_staff, payload.visibility)
 
+    now = datetime.now(UTC).replace(tzinfo=None)
     reply = TicketReply(
         event_id=event_id,
         ticket_id=ticket_id,
         from_staff_id=current_staff.id,
         content=payload.content,
         visibility=payload.visibility,
+        created_at=now,
     )
     db.add(reply)
     await db.flush()
-    ticket.updated_at = reply.created_at
+    ticket.updated_at = now
     try:
         await _maybe_capture_organizer_reply_as_knowledge(
             db,

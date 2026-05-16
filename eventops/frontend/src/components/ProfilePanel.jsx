@@ -94,7 +94,7 @@ export default function ProfilePanel({
           </div>
           <button
             className={`h-8 w-14 rounded-full p-1 transition ${
-              voiceAlertsEnabled ? "bg-teal-700" : "bg-slate-300"
+              voiceAlertsEnabled ? "bg-violet-700" : "bg-slate-300"
             }`}
             type="button"
             onClick={() => onVoiceAlertsChange(!voiceAlertsEnabled)}
