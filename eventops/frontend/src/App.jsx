@@ -8,6 +8,7 @@ import MessageFeed from "./components/MessageFeed.jsx";
 import ProfilePanel from "./components/ProfilePanel.jsx";
 import StaffGrid from "./components/StaffGrid.jsx";
 import TicketTable from "./components/TicketTable.jsx";
+import EventSetup from "./pages/EventSetup.jsx";
 import { useAppStore } from "./store/useAppStore.js";
 
 const tabs = [
@@ -19,10 +20,80 @@ const tabs = [
 
 const titles = {
   command: "Команда Алисе",
+  setup: "Настройка",
   tickets: "Активные тикеты",
   team: "Люди и роли",
   profile: "Профиль",
 };
+
+function navGridClass(count) {
+  if (count === 2) {
+    return "grid-cols-2";
+  }
+
+  if (count === 5) {
+    return "grid-cols-5";
+  }
+
+  return "grid-cols-4";
+}
+
+const DEMO_ADMIN_TOKEN = "demo-admin-token";
+const DEMO_VOLUNTEER_TOKEN = "demo-volunteer-token";
+const DEMO_EVENT = {
+  id: 1,
+  name: "ICPC Semifinal",
+  description: "Демо-мероприятие без backend",
+};
+const DEMO_STAFF = [
+  {
+    id: 1,
+    name: "Координатор",
+    is_admin: true,
+    role: { name: "Оргкомитет" },
+    status: "free",
+    zone: { name: "Штаб" },
+  },
+  {
+    id: 2,
+    name: "Анна",
+    role: { name: "Регистрация" },
+    status: "free",
+    zone: { name: "Вход" },
+  },
+  {
+    id: 3,
+    name: "Максим",
+    role: { name: "Техкомитет" },
+    status: "busy",
+    zone: { name: "Live" },
+  },
+];
+const DEMO_TICKETS = [
+  {
+    id: 1,
+    title: "Очередь на регистрации",
+    description: "Нужны два свободных человека у входа.",
+    priority: "high",
+    status: "waiting",
+    assignments: [
+      {
+        id: 1,
+        confirmed: false,
+        staff: { id: 2, name: "Анна", status: "free" },
+      },
+    ],
+  },
+];
+const DEMO_MESSAGES = [
+  {
+    id: 1,
+    content: "Проверьте готовность регистрации к открытию.",
+    visibility: "public",
+    is_read: false,
+    created_at: new Date().toISOString(),
+  },
+];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("command");
@@ -39,11 +110,14 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [messagesError, setMessagesError] = useState("");
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
+  const [myContext, setMyContext] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [staff, setStaff] = useState([]);
   const [staffError, setStaffError] = useState("");
   const [isStaffLoading, setIsStaffLoading] = useState(false);
   const [tickets, setTickets] = useState([]);
   const [ticketsError, setTicketsError] = useState("");
+  const [ticketFilters, setTicketFilters] = useState({ status: "" });
   const [isTicketsLoading, setIsTicketsLoading] = useState(false);
   const eventId = useAppStore((state) => state.eventId);
   const token = useAppStore((state) => state.token);
@@ -54,10 +128,44 @@ export default function App() {
   const selectedEvent = events.find((event) => String(event.id) === eventId);
   const selectedEventId = selectedEvent?.id;
   const currentStaff = useAppStore((state) => state.currentStaff);
+  const isDemoMode =
+    token === DEMO_ADMIN_TOKEN || token === DEMO_VOLUNTEER_TOKEN;
+  const isVolunteerMode = token === DEMO_VOLUNTEER_TOKEN;
+  const isAdminMode = Boolean(currentStaff?.isAdmin) && !isVolunteerMode;
+  const currentStaffProfile = staff.find((person) => person.id === currentStaff?.id);
+  const visibleTabs = isVolunteerMode
+    ? [
+        { id: "tickets", label: "Задачи" },
+        { id: "profile", label: "Профиль" },
+      ]
+    : isAdminMode
+    ? [tabs[0], { id: "setup", label: "Настр." }, ...tabs.slice(1)]
+    : tabs;
+  const pageTitle =
+    isVolunteerMode && activeTab === "tickets" ? "Мои задачи" : titles[activeTab];
+
+  useEffect(() => {
+    if (isVolunteerMode && !visibleTabs.some((tab) => tab.id === activeTab)) {
+      setActiveTab("tickets");
+      return;
+    }
+
+    if (activeTab === "setup" && !isAdminMode) {
+      setActiveTab("command");
+    }
+  }, [activeTab, isAdminMode, isVolunteerMode, visibleTabs]);
 
   useEffect(() => {
     if (!token) {
       setEvents([]);
+      return;
+    }
+
+    if (isDemoMode) {
+      setEvents([DEMO_EVENT]);
+      setEventId(DEMO_EVENT.id);
+      setEventsError("");
+      setIsEventsLoading(false);
       return;
     }
 
@@ -91,11 +199,18 @@ export default function App() {
     return () => {
       isActive = false;
     };
-  }, [eventId, setEventId, token]);
+  }, [eventId, isDemoMode, setEventId, token]);
 
   useEffect(() => {
     if (!selectedEventId) {
       setTickets([]);
+      return;
+    }
+
+    if (isDemoMode) {
+      setTickets(DEMO_TICKETS);
+      setTicketsError("");
+      setIsTicketsLoading(false);
       return;
     }
 
@@ -106,7 +221,7 @@ export default function App() {
       setIsTicketsLoading(true);
 
       api
-        .getTickets(selectedEventId)
+        .getTickets(selectedEventId, ticketFilters)
         .then((items) => {
           if (isActive) {
             setTickets(items);
@@ -131,12 +246,22 @@ export default function App() {
       isActive = false;
       window.clearInterval(timer);
     };
-  }, [selectedEventId]);
+  }, [isDemoMode, refreshKey, selectedEventId, ticketFilters]);
 
   useEffect(() => {
     if (!selectedEventId) {
       setMessages([]);
       setStaff([]);
+      return;
+    }
+
+    if (isDemoMode) {
+      setStaff(DEMO_STAFF);
+      setMessages(DEMO_MESSAGES);
+      setStaffError("");
+      setMessagesError("");
+      setIsStaffLoading(false);
+      setIsMessagesLoading(false);
       return;
     }
 
@@ -176,7 +301,48 @@ export default function App() {
       isActive = false;
       window.clearInterval(timer);
     };
-  }, [selectedEventId]);
+  }, [isDemoMode, refreshKey, selectedEventId]);
+
+  useEffect(() => {
+    if (!selectedEventId || !currentStaff?.id) {
+      setMyContext(null);
+      return;
+    }
+
+    if (isDemoMode) {
+      const myTickets = tickets.filter((ticket) =>
+        (ticket.assignments || []).some(
+          (assignment) => assignment.staff?.id === currentStaff.id,
+        ),
+      );
+
+      setMyContext({
+        my_tickets: isVolunteerMode ? myTickets : tickets,
+        my_messages: messages,
+        role_tickets: isVolunteerMode ? myTickets : tickets,
+      });
+      return;
+    }
+
+    let isActive = true;
+
+    api
+      .getStaffContext(selectedEventId, currentStaff.id)
+      .then((context) => {
+        if (isActive) {
+          setMyContext(context);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setMyContext(null);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [currentStaff?.id, isDemoMode, isVolunteerMode, messages, refreshKey, selectedEventId, tickets]);
 
   const login = async (telegramId) => {
     setAuthError("");
@@ -196,6 +362,25 @@ export default function App() {
     }
   };
 
+  const startDemo = (role) => {
+    const isVolunteer = role === "volunteer";
+    const demoStaff = isVolunteer ? DEMO_STAFF[1] : DEMO_STAFF[0];
+
+    setAuthError("");
+    setToken(isVolunteer ? DEMO_VOLUNTEER_TOKEN : DEMO_ADMIN_TOKEN);
+    setCurrentStaff({
+      id: demoStaff.id,
+      isAdmin: Boolean(demoStaff.is_admin),
+      name: demoStaff.name,
+    });
+    setEventId(DEMO_EVENT.id);
+    setActiveTab(isVolunteer ? "tickets" : "command");
+    setEvents([DEMO_EVENT]);
+    setStaff(DEMO_STAFF);
+    setTickets(DEMO_TICKETS);
+    setMessages(DEMO_MESSAGES);
+  };
+
   const sendCommand = async (command) => {
     if (!selectedEvent) {
       return;
@@ -209,6 +394,24 @@ export default function App() {
     setAgentResponse(null);
     setIsCommandLoading(true);
     setLastCommand(command);
+
+    if (isDemoMode) {
+      window.setTimeout(() => {
+        setAgentResponse({
+          action: "ticket_created",
+          message: "Демо: рекомендую отправить Анну на регистрацию.",
+          suggestion: {
+            reasoning: "Анна свободна и уже находится у входа.",
+            suggested_staff_ids: [2],
+            confidence: "high",
+            ticket_id: 1,
+          },
+          ticket: DEMO_TICKETS[0],
+        });
+        setIsCommandLoading(false);
+      }, 300);
+      return;
+    }
 
     try {
       const response = await api.sendCommand(selectedEvent.id, payload);
@@ -228,6 +431,29 @@ export default function App() {
     setAgentError("");
     setIsConfirming(true);
 
+    if (isDemoMode) {
+      setTickets((items) =>
+        items.map((ticket) =>
+          ticket.id === ticketId
+            ? {
+                ...ticket,
+                status: accept ? "in_progress" : ticket.status,
+                assignments: accept
+                  ? staffIds.map((staffId, index) => ({
+                      id: index + 1,
+                      confirmed: false,
+                      staff: staff.find((person) => person.id === staffId),
+                    }))
+                  : ticket.assignments,
+              }
+            : ticket,
+        ),
+      );
+      setAgentResponse(null);
+      setIsConfirming(false);
+      return;
+    }
+
     try {
       await api.confirmSuggestion(selectedEvent.id, {
         ticket_id: ticketId,
@@ -235,6 +461,7 @@ export default function App() {
         staff_ids: staffIds.length > 0 ? staffIds : null,
       });
       setAgentResponse(null);
+      setRefreshKey((key) => key + 1);
     } catch (error) {
       setAgentError(error.message);
     } finally {
@@ -242,9 +469,183 @@ export default function App() {
     }
   };
 
+  const refreshEventData = () => {
+    setRefreshKey((key) => key + 1);
+  };
+
+  const eventCreated = (event) => {
+    setEvents((items) => [...items, event]);
+    setEventId(event.id);
+    refreshEventData();
+  };
+
+  const createTicket = async (payload) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    setTicketsError("");
+
+    if (isDemoMode) {
+      setTickets((items) => [
+        {
+          id: Date.now(),
+          status: "new",
+          assignments: [],
+          ...payload,
+        },
+        ...items,
+      ]);
+      return;
+    }
+
+    try {
+      await api.createTicket(selectedEvent.id, payload);
+      refreshEventData();
+    } catch (error) {
+      setTicketsError(error.message);
+    }
+  };
+
+  const changeTicket = async (ticketId, status, staffIds = null) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    setTicketsError("");
+
+    if (isDemoMode) {
+      setTickets((items) =>
+        items.map((ticket) => {
+          if (ticket.id !== ticketId) {
+            return ticket;
+          }
+
+          if (staffIds) {
+            return {
+              ...ticket,
+              assignments: staffIds.map((staffId, index) => ({
+                id: index + 1,
+                confirmed: false,
+                staff: staff.find((person) => person.id === staffId),
+              })),
+            };
+          }
+
+          return status ? { ...ticket, status } : ticket;
+        }),
+      );
+      return;
+    }
+
+    try {
+      if (staffIds) {
+        await api.assignTicket(selectedEvent.id, ticketId, staffIds);
+      } else if (status) {
+        await api.updateTicket(selectedEvent.id, ticketId, { status });
+      }
+      refreshEventData();
+    } catch (error) {
+      setTicketsError(error.message);
+    }
+  };
+
+  const askTicketQuestion = async (ticket, content) => {
+    const message = `Вопрос по задаче #${ticket.id} "${ticket.title}": ${content}`;
+
+    await sendMessage({
+      content: message,
+      visibility: "public",
+    });
+
+    await changeTicket(ticket.id, "waiting");
+  };
+
+  const changeStaffStatus = async (staffId, status) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    setStaffError("");
+
+    if (isDemoMode) {
+      setStaff((items) =>
+        items.map((person) =>
+          person.id === staffId ? { ...person, status } : person,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await api.updateStaff(selectedEvent.id, staffId, { status });
+      refreshEventData();
+    } catch (error) {
+      setStaffError(error.message);
+    }
+  };
+
+  const sendMessage = async (payload) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    setMessagesError("");
+
+    if (isDemoMode) {
+      setMessages((items) => [
+        {
+          id: Date.now(),
+          is_read: false,
+          created_at: new Date().toISOString(),
+          ...payload,
+        },
+        ...items,
+      ]);
+      return;
+    }
+
+    try {
+      await api.createMessage(selectedEvent.id, payload);
+      refreshEventData();
+    } catch (error) {
+      setMessagesError(error.message);
+    }
+  };
+
+  const markMessageRead = async (messageId) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    setMessagesError("");
+
+    if (isDemoMode) {
+      setMessages((items) =>
+        items.map((message) =>
+          message.id === messageId ? { ...message, is_read: true } : message,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await api.markMessageRead(selectedEvent.id, messageId);
+      refreshEventData();
+    } catch (error) {
+      setMessagesError(error.message);
+    }
+  };
+
   if (!token) {
     return (
-      <LoginForm error={authError} isLoading={isLoginLoading} onSubmit={login} />
+      <LoginForm
+        error={authError}
+        isLoading={isLoginLoading}
+        onDemoAdmin={() => startDemo("admin")}
+        onDemoVolunteer={() => startDemo("volunteer")}
+        onSubmit={login}
+      />
     );
   }
 
@@ -256,7 +657,7 @@ export default function App() {
             EventOps AI
           </p>
           <div className="mt-2 flex items-center justify-between gap-3">
-            <h1 className="text-lg font-semibold">{titles[activeTab]}</h1>
+            <h1 className="text-lg font-semibold">{pageTitle}</h1>
             <EventSelector
               eventId={eventId}
               events={events}
@@ -265,7 +666,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="flex-1 px-4 py-4">
+        <main className="flex-1 px-4 pb-24 pt-4">
           {isEventsLoading ? (
             <p className="mb-4 text-sm text-slate-500">Загружаем события...</p>
           ) : null}
@@ -322,11 +723,35 @@ export default function App() {
                 onReject={(ticketId) => confirmSuggestion(ticketId, [], false)}
               />
             </div>
+          ) : activeTab === "setup" ? (
+            <EventSetup
+              event={selectedEvent}
+              staff={staff}
+              onChanged={refreshEventData}
+              onEventCreated={eventCreated}
+            />
           ) : activeTab === "tickets" ? (
             <TicketTable
               error={ticketsError}
+              filters={ticketFilters}
               isLoading={isTicketsLoading}
-              tickets={tickets}
+              mode={isVolunteerMode ? "volunteer" : "admin"}
+              staff={staff}
+              tickets={
+                isVolunteerMode
+                  ? tickets.filter((ticket) =>
+                      (ticket.assignments || []).some(
+                        (assignment) => assignment.staff?.id === currentStaff?.id,
+                      ),
+                    )
+                  : tickets
+              }
+              onCreate={createTicket}
+              onFilterChange={(nextFilters) =>
+                setTicketFilters((filters) => ({ ...filters, ...nextFilters }))
+              }
+              onQuestion={askTicketQuestion}
+              onStatusChange={changeTicket}
             />
           ) : activeTab === "team" ? (
             <div className="space-y-5">
@@ -337,6 +762,7 @@ export default function App() {
                 <StaffGrid
                   error={staffError}
                   isLoading={isStaffLoading}
+                  onStatusChange={changeStaffStatus}
                   staff={staff}
                 />
               </section>
@@ -348,12 +774,15 @@ export default function App() {
                   error={messagesError}
                   isLoading={isMessagesLoading}
                   messages={messages}
+                  onMarkRead={markMessageRead}
+                  onSend={sendMessage}
                 />
               </section>
             </div>
           ) : activeTab === "profile" ? (
             <ProfilePanel
-              currentStaff={currentStaff}
+              context={myContext}
+              currentStaff={currentStaffProfile || currentStaff}
               event={selectedEvent}
               onLogout={logout}
             />
@@ -366,8 +795,12 @@ export default function App() {
           )}
         </main>
 
-        <nav className="grid grid-cols-4 border-t border-slate-200 bg-white">
-          {tabs.map((tab) => (
+        <nav
+          className={`fixed bottom-0 left-1/2 z-20 grid w-full max-w-md -translate-x-1/2 border-t border-slate-200 bg-white ${
+            navGridClass(visibleTabs.length)
+          }`}
+        >
+          {visibleTabs.map((tab) => (
             <button
               className={`px-2 py-3 text-xs font-medium ${
                 activeTab === tab.id ? "text-teal-700" : "text-slate-500"

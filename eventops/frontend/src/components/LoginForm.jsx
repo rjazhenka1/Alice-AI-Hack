@@ -1,6 +1,12 @@
 import { useState } from "react";
 
-export default function LoginForm({ error, isLoading, onSubmit }) {
+export default function LoginForm({
+  error,
+  isLoading,
+  onDemoAdmin,
+  onDemoVolunteer,
+  onSubmit,
+}) {
   const [telegramId, setTelegramId] = useState("");
 
   const submit = (event) => {
@@ -16,7 +22,26 @@ export default function LoginForm({ error, isLoading, onSubmit }) {
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center bg-white px-4 py-8 text-slate-950">
       <p className="text-xs font-semibold uppercase text-teal-700">EventOps AI</p>
       <h1 className="mt-2 text-2xl font-semibold">Вход в штаб</h1>
-      <form className="mt-6 space-y-4" onSubmit={submit}>
+      <div className="mt-6 grid gap-3">
+        <button
+          className="h-12 w-full rounded-lg bg-slate-950 text-sm font-semibold text-white disabled:opacity-60"
+          disabled={isLoading}
+          type="button"
+          onClick={onDemoAdmin}
+        >
+          Войти как админ
+        </button>
+        <button
+          className="h-12 w-full rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 disabled:opacity-60"
+          disabled={isLoading}
+          type="button"
+          onClick={onDemoVolunteer}
+        >
+          Войти как волонтёр
+        </button>
+      </div>
+
+      <form className="mt-6 space-y-4 border-t border-slate-200 pt-6" onSubmit={submit}>
         <label className="block text-sm font-medium text-slate-700">
           Telegram ID
           <input

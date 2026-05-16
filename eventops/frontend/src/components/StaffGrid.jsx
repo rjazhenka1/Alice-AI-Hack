@@ -12,7 +12,7 @@ const statusLabels = {
   offline: "Оффлайн",
 };
 
-export default function StaffGrid({ error, isLoading, staff }) {
+export default function StaffGrid({ error, isLoading, onStatusChange, staff }) {
   if (isLoading && staff.length === 0) {
     return <p className="text-sm text-slate-500">Загружаем команду...</p>;
   }
@@ -54,6 +54,24 @@ export default function StaffGrid({ error, isLoading, staff }) {
               {statusLabels[person.status] || person.status}
             </span>
           </div>
+          {onStatusChange ? (
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {["free", "busy", "on_task"].map((status) => (
+                <button
+                  className={`h-9 rounded-lg text-xs font-medium ${
+                    person.status === status
+                      ? statusStyles[status]
+                      : "border border-slate-300 text-slate-600"
+                  }`}
+                  key={status}
+                  type="button"
+                  onClick={() => onStatusChange(person.id, status)}
+                >
+                  {statusLabels[status]}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </article>
       ))}
     </div>
