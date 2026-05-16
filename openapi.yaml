@@ -618,11 +618,34 @@ components:
 
     # ─── Agent ──────────────────────────────────────────────────────────────
 
+    AgentContextMessage:
+      type: object
+      required: [role, text]
+      properties:
+        role:
+          type: string
+          description: user | assistant | system
+          example: user
+        text:
+          type: string
+          minLength: 1
+          example: Нужны люди
+        source:
+          type: string
+          nullable: true
+          description: agent_text | agent_audio | telegram_text | telegram_voice
+        audio_file:
+          type: string
+          nullable: true
+          description: Путь к сохранённому аудиофайлу, если сообщение было голосовым
+
     AgentCommandRequest:
       type: object
       description: |
         Главный эндпоинт агента. Передаётся ровно одно из полей: `text` или `audio_base64`.
-        Пустые значения считаются невалидными.
+        Пустые значения считаются невалидными. `context` опционален: до 20 предыдущих сообщений.
+        Если `context` передан, бэкенд использует его как предысторию этого запроса вместо
+        сохранённой session-памяти текущего пользователя.
       properties:
         text:
           type: string
@@ -634,6 +657,13 @@ components:
           nullable: true
           minLength: 1
           description: Base64-encoded audio. В SpeechKit-ветке используется как вход для STT.
+        context:
+          type: array
+          nullable: true
+          maxItems: 20
+          description: Опциональный контекст диалога до 20 сообщений
+          items:
+            $ref: '#/components/schemas/AgentContextMessage'
       oneOf:
         - required: [text]
         - required: [audio_base64]

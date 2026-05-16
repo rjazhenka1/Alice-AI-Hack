@@ -68,6 +68,24 @@ def _previous_messages(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return messages
 
 
+def _normalize_client_context(context: list[dict[str, Any]]) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for item in context[-MAX_SESSION_MESSAGES:]:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        messages.append(
+            _message_record(
+                role=role,
+                text=text,
+                audio_file=str(item["audio_file"]) if item.get("audio_file") else None,
+                source=str(item["source"]) if item.get("source") else None,
+            )
+        )
+    return messages
+
+
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
 
@@ -286,9 +304,14 @@ async def handle_command(
     text: str,
     source: str | None = None,
     audio_file: str | None = None,
+    client_context: list[dict[str, Any]] | None = None,
 ) -> AgentCommandResponse:
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
-    context = list(session.context or [])
+    context = (
+        _normalize_client_context(client_context)
+        if client_context is not None
+        else list(session.context or [])
+    )
     context.append(_message_record(role="user", text=text, audio_file=audio_file, source=source))
 
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)

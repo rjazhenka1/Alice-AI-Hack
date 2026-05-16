@@ -297,15 +297,29 @@ class ConfidentialityRule(ConfidentialityRuleCreate):
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
+class AgentContextMessage(BaseModel):
+    role: str = Field(..., examples=["user"], description="user | assistant | system")
+    text: str = Field(..., min_length=1)
+    source: Optional[str] = Field(None, description="agent_text | agent_audio | telegram_text | telegram_voice")
+    audio_file: Optional[str] = Field(None, description="Путь к сохранённому аудиофайлу, если сообщение было голосовым")
+
+
 class AgentCommandRequest(BaseModel):
     """
     Главный эндпоинт агента.
     text — текст команды (или распознанный голос).
     audio_base64 — альтернатива тексту: wav/ogg в base64,
                    бэкенд сам прогоняет через STT Алисы.
+    context — опциональная предыстория до 20 сообщений; если передана,
+              используется вместо сохранённой session-памяти для этого запроса.
     """
     text:          Optional[str]  = Field(None, examples=["На регистрации очередь, нужны люди"])
     audio_base64:  Optional[str]  = None  # base64-encoded audio
+    context:       Optional[list[AgentContextMessage]] = Field(
+        None,
+        max_length=20,
+        description="Опциональный контекст диалога до 20 сообщений.",
+    )
 
 
 class TranscriptionRequest(BaseModel):
