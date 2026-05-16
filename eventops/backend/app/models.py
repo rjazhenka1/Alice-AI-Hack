@@ -77,6 +77,7 @@ class Event(Base):
     tickets = relationship("Ticket", back_populates="event", cascade="all, delete-orphan")
     knowledge_base_links = relationship("KnowledgeBaseLink", back_populates="event", cascade="all, delete-orphan")
     confidentiality_rules = relationship("ConfidentialityRule", back_populates="event", cascade="all, delete-orphan")
+    ticket_replies = relationship("TicketReply", back_populates="event", cascade="all, delete-orphan")
 
 
 class Zone(Base):
@@ -180,6 +181,11 @@ class Ticket(Base):
     role        = relationship("Role",   foreign_keys=[assignee_role_id])
     assignments = relationship("TicketAssignment", back_populates="ticket",
                                cascade="all, delete-orphan")
+    replies     = relationship("TicketReply", back_populates="ticket", cascade="all, delete-orphan")
+
+    @property
+    def sender(self) -> Staff | None:
+        return self.created_by
 
     @property
     def target(self) -> dict[str, Any]:
@@ -220,6 +226,27 @@ class TicketAssignment(Base):
 
     ticket = relationship("Ticket", back_populates="assignments")
     staff  = relationship("Staff",  back_populates="assignments")
+
+
+class TicketReply(Base):
+    """Ответ/комментарий к тикету от участника мероприятия."""
+    __tablename__ = "ticket_replies"
+
+    id            = Column(Integer, primary_key=True)
+    event_id      = Column(Integer, ForeignKey("events.id"), nullable=False)
+    ticket_id     = Column(Integer, ForeignKey("tickets.id"), nullable=False)
+    from_staff_id = Column(Integer, ForeignKey("staff.id"), nullable=False)
+    content       = Column(Text, nullable=False)
+    visibility    = Column(Enum(Visibility), default=Visibility.public)
+    created_at    = Column(DateTime, default=utcnow)
+
+    event      = relationship("Event", back_populates="ticket_replies")
+    ticket     = relationship("Ticket", back_populates="replies")
+    from_staff = relationship("Staff", foreign_keys=[from_staff_id])
+
+    @property
+    def sender(self) -> Staff | None:
+        return self.from_staff
 
 
 class Message(Base):

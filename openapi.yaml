@@ -410,6 +410,41 @@ components:
         confirmed:
           type: boolean
 
+    TicketReplyCreate:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          example: Взял задачу, буду через 5 минут
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+          default: public
+
+    TicketReply:
+      type: object
+      required: [id, event_id, ticket_id, from_staff_id, content, visibility, created_at]
+      properties:
+        id:
+          type: integer
+        event_id:
+          type: integer
+        ticket_id:
+          type: integer
+        from_staff_id:
+          type: integer
+        sender:
+          $ref: '#/components/schemas/StaffShort'
+          nullable: true
+        content:
+          type: string
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        created_at:
+          type: string
+          format: date-time
+
     Ticket:
       type: object
       required: [id, event_id, title, type, priority, status, visibility, created_at, updated_at]
@@ -433,6 +468,13 @@ components:
           $ref: '#/components/schemas/Visibility'
         created_by_id:
           type: integer
+          nullable: true
+        sender:
+          $ref: '#/components/schemas/StaffShort'
+          nullable: true
+          description: Отправитель/создатель тикета
+        created_by:
+          $ref: '#/components/schemas/StaffShort'
           nullable: true
         assignee_role_id:
           type: integer
@@ -1193,6 +1235,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ticket'
+
+  /events/{event_id}/tickets/{ticket_id}/replies:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: ticket_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [tickets]
+      summary: Ответы на тикет
+      description: Доступно только пользователям, которые видят сам тикет
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketReply'
+    post:
+      tags: [tickets]
+      summary: Добавить ответ к тикету
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketReplyCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketReply'
 
   /events/{event_id}/tickets/{ticket_id}/assignments/{assignment_id}:
     parameters:

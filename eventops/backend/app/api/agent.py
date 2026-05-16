@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..agent.alice import SpeechKitClient, audio_not_supported_message
+from ..agent.alice import SpeechKitClient
 from ..agent.router import confirm_ticket, handle_command
 from ..models import Staff
 from ..schemas import (
@@ -38,6 +39,20 @@ except Exception:  # pragma: no cover - fallback for partial PoC environments
 router = APIRouter(prefix="/events/{event_id}/agent", tags=["agent"])
 
 
+async def _maybe_add_audio_response(response: AgentCommandResponse, speechkit: SpeechKitClient) -> AgentCommandResponse:
+    if os.getenv("ALICE_ENABLE_TTS_RESPONSES", "").lower() not in {"1", "true", "yes"}:
+        return response
+
+    try:
+        response.audio = AudioSynthesis(
+            status="ok",
+            audio_base64=await speechkit.synthesize_text_base64(text=response.message),
+        )
+    except Exception as exc:
+        response.audio = AudioSynthesis(status="error", detail=str(exc))
+    return response
+
+
 @router.post("/command", response_model=AgentCommandResponse)
 async def agent_command(
     event_id: int,
@@ -51,11 +66,12 @@ async def agent_command(
     has_audio = bool((payload.audio_base64 or "").strip())
 
     if has_audio and not has_text:
-        return AgentCommandResponse(
-            action="answered",
-            message=audio_not_supported_message(),
-            audio=AudioSynthesis(status="not_implemented", detail="SpeechKit TTS stub is not implemented yet"),
-        )
+        try:
+            text = await speechkit.transcribe_audio_base64(audio_base64=payload.audio_base64 or "")
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     if not has_text and not has_audio:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Either text or audio_base64 is required")
@@ -65,11 +81,7 @@ async def agent_command(
 
     try:
         response = await handle_command(db=db, event_id=event_id, current_staff=current_staff, text=text)
-        if response.audio is None:
-            response.audio = AudioSynthesis(status="not_implemented", detail="SpeechKit TTS stub is not implemented yet")
-        # Keep reference so stub method exists in merge target; implementation comes later.
-        _ = speechkit
-        return response
+        return await _maybe_add_audio_response(response, speechkit)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -83,13 +95,19 @@ async def agent_transcribe(
     db: AsyncSession = Depends(get_db),
     current_staff: Staff = Depends(get_current_staff),
 ) -> TranscriptionResponse:
-    # Event/staff dependencies are intentionally kept for future auth and access checks.
-    _ = (event_id, db, current_staff, payload)
-    return TranscriptionResponse(
-        text=None,
-        status="not_implemented",
-        detail="SpeechKit STT stub is not implemented yet",
-    )
+    if current_staff.event_id != event_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this event")
+
+    try:
+        text = await SpeechKitClient().transcribe_audio_base64(
+            audio_base64=payload.audio_base64,
+            language=payload.language,
+        )
+        return TranscriptionResponse(text=text, status="ok")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        return TranscriptionResponse(text=None, status="error", detail=str(exc))
 
 
 @router.post("/confirm", response_model=Ticket)

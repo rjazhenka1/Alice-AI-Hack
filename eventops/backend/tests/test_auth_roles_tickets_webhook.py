@@ -102,6 +102,8 @@ async def test_tickets_create_and_list_visibility_basic(client: AsyncClient, db_
     )
     assert public_response.status_code == 201
     assert public_response.json()["created_by_id"] == admin.id
+    assert public_response.json()["sender"]["id"] == admin.id
+    assert public_response.json()["created_by"]["name"] == "Admin"
 
     role_only_response = await client.post(
         f"/events/{event.id}/tickets",
@@ -151,6 +153,41 @@ async def test_tickets_create_and_list_visibility_basic(client: AsyncClient, db_
     assert [ticket["title"] for ticket in tech_list.json()] == ["Очередь на входе"]
 
 
+async def test_ticket_replies_use_ticket_visibility_and_sender(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    event = await seed_event(db_session)
+    admin = await seed_staff(db_session, event.id, name="Admin", is_admin=True)
+    member = await seed_staff(db_session, event.id, name="Volunteer")
+    await db_session.commit()
+
+    ticket_response = await client.post(
+        f"/events/{event.id}/tickets",
+        json={"title": "Проверить вход"},
+        headers=auth_headers(admin),
+    )
+    assert ticket_response.status_code == 201
+    ticket_id = ticket_response.json()["id"]
+
+    reply_response = await client.post(
+        f"/events/{event.id}/tickets/{ticket_id}/replies",
+        json={"content": "Взял, иду к входу"},
+        headers=auth_headers(member),
+    )
+    assert reply_response.status_code == 201
+    reply = reply_response.json()
+    assert reply["content"] == "Взял, иду к входу"
+    assert reply["sender"]["id"] == member.id
+
+    replies_response = await client.get(
+        f"/events/{event.id}/tickets/{ticket_id}/replies",
+        headers=auth_headers(admin),
+    )
+    assert replies_response.status_code == 200
+    assert [item["content"] for item in replies_response.json()] == ["Взял, иду к входу"]
+
+
 async def test_telegram_webhook_text_saves_message_and_queues_reply(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -192,9 +229,62 @@ async def test_telegram_webhook_text_saves_message_and_queues_reply(
     assert message.event_id == event.id
     assert message.content == "Нужна помощь у входа"
 
+    assert queued_notifications[0]["telegram_id"] == "777"
+    assert "Создал задачу" in queued_notifications[0]["message"]
+
+
+async def test_telegram_webhook_voice_transcribes_and_answers(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+    tmp_path,
+):
+    event = await seed_event(db_session)
+    staff = await seed_staff(db_session, event.id, name="Telegram User", telegram_id="778")
+    await db_session.commit()
+
+    voice_path = tmp_path / "voice.oga"
+    voice_path.write_bytes(b"fake")
+    queued_notifications: list[dict[str, str]] = []
+
+    async def fake_save_voice(*args, **kwargs):
+        return voice_path
+
+    async def fake_transcribe(path):
+        assert path == voice_path
+        return "Что мне делать?"
+
+    async def fake_answer(db, staff, text):
+        assert text == "Что мне делать?"
+        return "Твоя текущая задача: быть на регистрации."
+
+    async def fake_enqueue_notification(payload: dict[str, str]) -> None:
+        queued_notifications.append(payload)
+
+    monkeypatch.setattr("app.api.integrations._save_telegram_voice", fake_save_voice)
+    monkeypatch.setattr("app.api.integrations._transcribe_voice_file", fake_transcribe)
+    monkeypatch.setattr("app.api.integrations._answer_with_alice", fake_answer)
+    monkeypatch.setattr("app.api.integrations.enqueue_notification", fake_enqueue_notification)
+
+    response = await client.post(
+        "/integrations/telegram/webhook",
+        json={
+            "message": {
+                "message_id": 11,
+                "from": {"id": 778},
+                "chat": {"id": 778},
+                "voice": {"file_id": "file-1", "duration": 2},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    message = await db_session.scalar(select(Message).where(Message.from_staff_id == staff.id))
+    assert message is not None
+    assert "transcript=Что мне делать?" in message.content
     assert queued_notifications == [
         {
-            "telegram_id": "777",
-            "message": "Приняла сообщение и передала в штаб.",
+            "telegram_id": "778",
+            "message": "Твоя текущая задача: быть на регистрации.",
         }
     ]

@@ -80,6 +80,13 @@ async def test_command_audio_returns_abi_fallback(db_session: AsyncSession):
     event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
     coordinator = await _get_staff(db_session, coordinator_id)
 
+    async def fake_transcribe(self, *, audio_base64: str, language: str = "ru-RU") -> str:
+        return "На входе толпа, срочно помогите"
+
+    from app.agent.alice import SpeechKitClient
+
+    SpeechKitClient.transcribe_audio_base64 = fake_transcribe  # type: ignore[method-assign]
+
     response = await agent_command(
         event_id=event_id,
         payload=AgentCommandRequest(audio_base64="ZmFrZQ=="),
@@ -87,8 +94,8 @@ async def test_command_audio_returns_abi_fallback(db_session: AsyncSession):
         current_staff=coordinator,
     )
 
-    assert response.action == "answered"
-    assert response.message == "Поддержка голосовых сообщений не реализована"
+    assert response.action == "ticket_created"
+    assert response.ticket is not None
 
 
 @pytest.mark.asyncio

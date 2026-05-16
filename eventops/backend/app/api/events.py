@@ -76,7 +76,10 @@ async def get_event_summary(
         (
             await db.scalars(
                 select(Ticket)
-                .options(selectinload(Ticket.assignments).selectinload(TicketAssignment.staff))
+                .options(
+                    selectinload(Ticket.created_by),
+                    selectinload(Ticket.assignments).selectinload(TicketAssignment.staff),
+                )
                 .where(Ticket.event_id == event_id, Ticket.status.not_in([TicketStatus.closed, TicketStatus.resolved]))
                 .where(visible_clause)
                 .order_by(Ticket.updated_at.desc())
