@@ -1,6 +1,5 @@
 import { useState } from "react";
 import CommandBar from "./components/CommandBar.jsx";
-import { useAppStore } from "./store/useAppStore.js";
 
 const tabs = [
   { id: "command", label: "Штаб" },
@@ -19,8 +18,6 @@ const titles = {
 export default function App() {
   const [activeTab, setActiveTab] = useState("command");
   const [lastCommand, setLastCommand] = useState(null);
-  const eventId = useAppStore((state) => state.eventId);
-  const setEventId = useAppStore((state) => state.setEventId);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-950">
@@ -31,16 +28,9 @@ export default function App() {
           </p>
           <div className="mt-2 flex items-center justify-between gap-3">
             <h1 className="text-lg font-semibold">{titles[activeTab]}</h1>
-            <label className="flex items-center gap-2 text-sm text-slate-600">
-              ID
-              <input
-                className="h-9 w-16 rounded-md border border-slate-300 px-2 text-sm"
-                min="1"
-                type="number"
-                value={eventId}
-                onChange={(event) => setEventId(event.target.value)}
-              />
-            </label>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500">
+              Нет события
+            </span>
           </div>
         </header>
 
