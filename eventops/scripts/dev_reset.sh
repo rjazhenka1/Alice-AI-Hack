@@ -6,9 +6,10 @@ cd "$ROOT_DIR"
 
 ADMIN_TELEGRAM_ID="${ADMIN_TELEGRAM_ID:-111111111}"
 ADMIN_NAME="${ADMIN_NAME:-Coordinator}"
+ADMIN_TELEGRAM_USERNAME="${ADMIN_TELEGRAM_USERNAME:-BellatorHonoris}"
 VOLUNTEER_TELEGRAM_ID="${VOLUNTEER_TELEGRAM_ID:-222222222}"
-VOLUNTEER_NAME="${VOLUNTEER_NAME:-Volunteer}"
-VOLUNTEER_USERNAME="${VOLUNTEER_USERNAME:-eventops_volunteer}"
+VOLUNTEER_NAME="${VOLUNTEER_NAME:-Максим Альжанов}"
+VOLUNTEER_USERNAME="${VOLUNTEER_USERNAME:-rjazhenka1}"
 VOLUNTEER_ROLE_NAME="${VOLUNTEER_ROLE_NAME:-Регистрация}"
 VOLUNTEER_ZONE_NAME="${VOLUNTEER_ZONE_NAME:-Вход}"
 EVENT_NAME="${EVENT_NAME:-ICPC Semifinal}"
@@ -63,6 +64,7 @@ echo "Seeding clean event, admin, volunteer, role, and zone..."
 docker compose exec -T \
   -e ADMIN_TELEGRAM_ID="$ADMIN_TELEGRAM_ID" \
   -e ADMIN_NAME="$ADMIN_NAME" \
+  -e ADMIN_TELEGRAM_USERNAME="$ADMIN_TELEGRAM_USERNAME" \
   -e VOLUNTEER_TELEGRAM_ID="$VOLUNTEER_TELEGRAM_ID" \
   -e VOLUNTEER_NAME="$VOLUNTEER_NAME" \
   -e VOLUNTEER_USERNAME="$VOLUNTEER_USERNAME" \
@@ -81,6 +83,7 @@ from app.models import Event, Role, Staff, StaffStatus, Zone
 async def main():
     admin_telegram_id = os.environ["ADMIN_TELEGRAM_ID"]
     admin_name = os.environ["ADMIN_NAME"]
+    admin_telegram_username = os.environ["ADMIN_TELEGRAM_USERNAME"].strip().lstrip("@").lower()
     volunteer_telegram_id = os.environ["VOLUNTEER_TELEGRAM_ID"]
     volunteer_name = os.environ["VOLUNTEER_NAME"]
     volunteer_username = os.environ["VOLUNTEER_USERNAME"]
@@ -116,6 +119,7 @@ async def main():
             event_id=event.id,
             name=admin_name,
             telegram_id=admin_telegram_id,
+            telegram_username=admin_telegram_username,
             is_admin=True,
             status=StaffStatus.free,
         )
@@ -136,6 +140,7 @@ async def main():
         print(f"EVENT_NAME={event.name}")
         print(f"ADMIN_ID={admin.id}")
         print(f"ADMIN_TELEGRAM_ID={admin.telegram_id}")
+        print(f"ADMIN_TELEGRAM_USERNAME=@{admin.telegram_username}")
         print(f"VOLUNTEER_ID={volunteer.id}")
         print(f"VOLUNTEER_TELEGRAM_ID={volunteer.telegram_id}")
         print(f"VOLUNTEER_ROLE={role.name}")
@@ -150,8 +155,8 @@ echo
 echo "Clean dev stack is ready."
 echo "Frontend: http://localhost:5173"
 echo "API docs: http://localhost:8000/docs"
-echo "Admin login Telegram ID: $ADMIN_TELEGRAM_ID"
-echo "Volunteer login Telegram ID: $VOLUNTEER_TELEGRAM_ID"
+echo "Admin login Telegram username: @$ADMIN_TELEGRAM_USERNAME"
+echo "Volunteer login Telegram username: @$VOLUNTEER_USERNAME"
 echo
 echo "Useful commands:"
 echo "  docker compose logs -f backend"

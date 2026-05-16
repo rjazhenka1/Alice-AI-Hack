@@ -31,11 +31,8 @@ const emptyConfidentialityRule = {
 };
 const emptyStaff = {
   name: "",
-  telegram_id: "",
   telegram_username: "",
   role_id: "",
-  zone_id: "",
-  is_admin: false,
 };
 
 const visibilityOptions = [
@@ -220,11 +217,9 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
     save(async () => {
       await api.createStaff(event.id, {
         name: staffForm.name.trim(),
-        telegram_id: nullable(staffForm.telegram_id),
-        telegram_username: nullable(staffForm.telegram_username),
+        telegram_username: nullable(staffForm.telegram_username)?.replace(/^@/, "") || null,
         role_id: toOptionalId(staffForm.role_id),
-        zone_id: toOptionalId(staffForm.zone_id),
-        is_admin: staffForm.is_admin,
+        is_admin: false,
       });
       setStaffForm(emptyStaff);
     }, "Сотрудник добавлен");
@@ -344,8 +339,8 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
         .split("\n")
         .slice(0, 5)
         .map((line) => {
-          const [name, telegram_id, role] = line.split(",").map((part) => part.trim());
-          return { name, telegram_id, role };
+          const [name, telegram_username, role] = line.split(",").map((part) => part.trim());
+          return { name, telegram_username, role };
         })
         .filter((item) => item.name);
     }
@@ -752,89 +747,43 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
             <form className="space-y-3" onSubmit={createStaff}>
               <input
                 className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
-                placeholder="Анна Иванова"
+                placeholder="Имя и фамилия"
                 value={staffForm.name}
                 onChange={(changeEvent) =>
                   setStaffForm((form) => ({ ...form, name: changeEvent.target.value }))
                 }
               />
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
-                  inputMode="numeric"
-                  placeholder="Telegram ID"
-                  value={staffForm.telegram_id}
-                  onChange={(changeEvent) =>
-                    setStaffForm((form) => ({
-                      ...form,
-                      telegram_id: changeEvent.target.value,
-                    }))
-                  }
-                />
-                <input
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
-                  placeholder="username"
-                  value={staffForm.telegram_username}
-                  onChange={(changeEvent) =>
-                    setStaffForm((form) => ({
-                      ...form,
-                      telegram_username: changeEvent.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <select
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
-                  value={staffForm.role_id}
-                  onChange={(changeEvent) =>
-                    setStaffForm((form) => ({
-                      ...form,
-                      role_id: changeEvent.target.value,
-                    }))
-                  }
-                >
-                  <option value="">Роль</option>
-                  {roles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                      {role.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="h-11 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
-                  value={staffForm.zone_id}
-                  onChange={(changeEvent) =>
-                    setStaffForm((form) => ({
-                      ...form,
-                      zone_id: changeEvent.target.value,
-                    }))
-                  }
-                >
-                  <option value="">Зона</option>
-                  {zones.map((zone) => (
-                    <option key={zone.id} value={zone.id}>
-                      {zone.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <label className="flex items-center gap-2 text-sm text-slate-600">
-                <input
-                  checked={staffForm.is_admin}
-                  type="checkbox"
-                  onChange={(changeEvent) =>
-                    setStaffForm((form) => ({
-                      ...form,
-                      is_admin: changeEvent.target.checked,
-                    }))
-                  }
-                />
-                Администратор
-              </label>
+              <input
+                className="h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-violet-600"
+                placeholder="@username"
+                value={staffForm.telegram_username}
+                onChange={(changeEvent) =>
+                  setStaffForm((form) => ({
+                    ...form,
+                    telegram_username: changeEvent.target.value,
+                  }))
+                }
+              />
+              <select
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-violet-600"
+                value={staffForm.role_id}
+                onChange={(changeEvent) =>
+                  setStaffForm((form) => ({
+                    ...form,
+                    role_id: changeEvent.target.value,
+                  }))
+                }
+              >
+                <option value="">Роль</option>
+                {roles.map((role) => (
+                  <option key={role.id} value={role.id}>
+                    {role.name}
+                  </option>
+                ))}
+              </select>
               <button
                 className="h-11 w-full rounded-lg bg-violet-700 text-sm font-semibold text-white disabled:opacity-60"
-                disabled={isSaving || !staffForm.name.trim()}
+                disabled={isSaving || !staffForm.name.trim() || !staffForm.telegram_username.trim() || !staffForm.role_id}
                 type="submit"
               >
                 Добавить человека
@@ -848,7 +797,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
           <Section title="Импорт волонтёров">
             <textarea
               className="min-h-28 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-violet-600"
-              placeholder={'CSV: Анна,222222222,Регистрация\nили JSON: [{"name":"Анна","telegram_id":"222222222"}]'}
+              placeholder={'CSV: Анна Иванова,@anna,Регистрация\nили JSON: [{"name":"Анна Иванова","telegram_username":"@anna","role":"Регистрация"}]'}
               value={importText}
               onChange={(changeEvent) => setImportText(changeEvent.target.value)}
             />
@@ -860,7 +809,7 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                     key={`${item.name}-${index}`}
                   >
                     {item.name || "Без имени"}
-                    {item.telegram_id ? ` · ${item.telegram_id}` : ""}
+                    {item.telegram_username ? ` · ${item.telegram_username}` : ""}
                     {item.role ? ` · ${item.role}` : ""}
                   </div>
                 ))}

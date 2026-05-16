@@ -397,13 +397,16 @@ class AlicePlanner:
 
     async def plan(self, text: str, *, system_prompt: str | None = None) -> PlannedCommand:
         if not self.api_key or not self.folder_id:
-            raise RuntimeError("Alice API is not configured: set ALICE_API_KEY and ALICE_FOLDER_ID")
+            logger.warning("alice_planner_fallback reason=missing_config")
+            return self._plan_local(text)
         if self.model == "poc-rule-based":
-            raise RuntimeError("Alice model is not configured: set ALICE_MODEL to real model id")
+            logger.warning("alice_planner_fallback reason=poc_rule_based_model")
+            return self._plan_local(text)
 
         remote_plan = await self._plan_remote(text=text, system_prompt=system_prompt)
         if remote_plan is None:
-            raise RuntimeError("Alice API request failed or returned invalid response")
+            logger.warning("alice_planner_fallback reason=remote_plan_failed")
+            return self._plan_local(text)
         return remote_plan
 
     async def assess_knowledge_candidate(
@@ -528,6 +531,13 @@ class AlicePlanner:
                 message="Собираю текущую сводку по тикетам.",
             )
 
+        if self._is_knowledge_request(lowered):
+            return PlannedCommand(
+                kind="knowledge_base",
+                message="Ищу ответ в базе знаний.",
+                keywords=self._extract_keywords(normalized),
+            )
+
         title = self._extract_title(normalized)
         return PlannedCommand(
             kind="operational",
@@ -553,6 +563,90 @@ class AlicePlanner:
             "что по",
         )
         return any(t in lowered for t in triggers)
+
+    @staticmethod
+    def _is_knowledge_request(lowered: str) -> bool:
+        question_words = (
+            "где",
+            "когда",
+            "куда",
+            "кто",
+            "как",
+            "какой",
+            "какая",
+            "какое",
+            "какие",
+            "что",
+            "есть ли",
+            "можно ли",
+            "сколько",
+        )
+        knowledge_words = (
+            "база знаний",
+            "регламент",
+            "инструкция",
+            "расписание",
+            "карта",
+            "аудитория",
+            "кабинет",
+            "зал",
+            "холл",
+            "стойка",
+            "регистрация",
+            "бейдж",
+            "маршрут",
+            "документ",
+            "файл",
+            "скрин",
+            "скриншот",
+            "пдф",
+            "pdf",
+        )
+        return any(word in lowered for word in knowledge_words) or any(
+            lowered.startswith(word) or f" {word} " in f" {lowered} " for word in question_words
+        )
+
+    @staticmethod
+    def _extract_keywords(text: str) -> list[str]:
+        words = re.findall(r"[\wА-Яа-яЁё]+", text)
+        stop_words = {
+            "что",
+            "где",
+            "когда",
+            "куда",
+            "кто",
+            "как",
+            "какой",
+            "какая",
+            "какое",
+            "какие",
+            "есть",
+            "можно",
+            "ли",
+            "про",
+            "это",
+            "этот",
+            "эта",
+            "у",
+            "в",
+            "на",
+            "с",
+            "и",
+            "по",
+            "для",
+            "из",
+        }
+        keywords: list[str] = []
+        seen: set[str] = set()
+        for word in words:
+            lowered = word.lower()
+            if len(lowered) < 3 or lowered in stop_words or lowered in seen:
+                continue
+            seen.add(lowered)
+            keywords.append(word)
+            if len(keywords) >= 8:
+                break
+        return keywords
 
     @staticmethod
     def _extract_title(text: str) -> str:

@@ -28,12 +28,15 @@ function formatTime(value) {
 }
 
 export default function ChatPanel({
+  broadcastMode = false,
   chat,
   disabled = false,
   isLoading = false,
   mode = "volunteer",
   replyTarget = null,
+  onBroadcastToggle,
   onCancelReply,
+  onSendBroadcast,
   onReply,
   onSendAudio,
   onSendText,
@@ -52,7 +55,9 @@ export default function ChatPanel({
       return;
     }
 
-    if (replyTarget && onReply) {
+    if (broadcastMode && onSendBroadcast) {
+      onSendBroadcast(value);
+    } else if (replyTarget && onReply) {
       onReply(replyTarget, value);
     } else {
       onSendText(value);
@@ -126,8 +131,17 @@ export default function ChatPanel({
     <section className="flex min-h-[calc(100vh-180px)] flex-col">
       <div className="flex-1 space-y-3 overflow-y-auto pb-4">
         {mode === "admin" ? (
-          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800">
-            Вопросы волонтёров, которые Алиса не закрыла сама, появятся здесь.
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800">
+            <span>Вопросы волонтёров и сообщения штаба.</span>
+            <button
+              className={`shrink-0 rounded-md px-2 py-1 text-xs font-semibold ${
+                broadcastMode ? "bg-violet-700 text-white" : "bg-white text-violet-800"
+              }`}
+              type="button"
+              onClick={onBroadcastToggle}
+            >
+              Всем
+            </button>
           </div>
         ) : null}
 
@@ -198,11 +212,29 @@ export default function ChatPanel({
             </button>
           </div>
         ) : null}
+        {broadcastMode && !replyTarget ? (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-violet-50 px-3 py-2 text-xs text-violet-900">
+            <span className="min-w-0 truncate">Сообщение всем участникам</span>
+            <button
+              className="shrink-0 font-semibold"
+              type="button"
+              onClick={onBroadcastToggle}
+            >
+              Отмена
+            </button>
+          </div>
+        ) : null}
         <div className="grid grid-cols-[1fr_64px] gap-2">
           <input
             className="h-12 min-w-0 rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-violet-600"
             disabled={disabled}
-            placeholder={replyTarget ? "Ответить волонтёру" : "Спросить Алису"}
+            placeholder={
+              broadcastMode
+                ? "Сообщение всем"
+                : replyTarget
+                  ? "Ответить волонтёру"
+                  : "Спросить Алису"
+            }
             value={text}
             onChange={(event) => setText(event.target.value)}
           />

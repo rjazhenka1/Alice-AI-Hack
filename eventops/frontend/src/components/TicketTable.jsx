@@ -332,10 +332,7 @@ export default function TicketTable({
   const personName = (staffId, fallback = "Участник") =>
     staff.find((person) => person.id === staffId)?.name || fallback;
 
-  if (isLoading && tickets.length === 0) {
-    return <p className="text-sm text-slate-500">Загружаем тикеты...</p>;
-  }
-
+  const isInitialLoading = isLoading && tickets.length === 0;
   const visibleTickets =
     mode === "admin" && filters.status
       ? tickets.filter((ticket) => ticket.status === filters.status)
@@ -405,7 +402,13 @@ export default function TicketTable({
         <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>
       ) : null}
 
-      {tickets.length === 0 ? (
+      {isInitialLoading ? (
+        <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
+          <p className="text-sm text-slate-600">Загружаем тикеты...</p>
+        </section>
+      ) : null}
+
+      {!isInitialLoading && tickets.length === 0 ? (
         <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
           <p className="text-sm text-slate-600">Активных тикетов пока нет.</p>
         </section>

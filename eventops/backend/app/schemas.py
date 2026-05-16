@@ -20,7 +20,8 @@ from .models import (
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
-    telegram_id: str
+    telegram_id: Optional[str] = None
+    telegram_username: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -74,6 +75,8 @@ class StaffCreate(BaseModel):
 
 class StaffUpdate(BaseModel):
     name:      Optional[str]          = None
+    telegram_id: Optional[str]        = None
+    telegram_username: Optional[str]  = None
     role_id:   Optional[int]          = None
     zone_id:   Optional[int]          = None
     status:    Optional[StaffStatus]  = None

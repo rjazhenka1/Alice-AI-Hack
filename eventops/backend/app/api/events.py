@@ -31,6 +31,8 @@ async def create_event(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can create events")
     event = Event(**payload.model_dump())
     db.add(event)
+    await db.flush()
+    current_staff.event_id = event.id
     await db.commit()
     await db.refresh(event)
     return event

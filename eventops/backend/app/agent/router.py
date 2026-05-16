@@ -23,6 +23,7 @@ from ..models import (
     StaffStatus,
     Ticket,
     TicketAssignment,
+    TicketPriority,
     TicketStatus,
     Visibility,
     Zone,
@@ -176,6 +177,18 @@ def _entity_tokens(value: str) -> list[str]:
     return normalized_tokens
 
 
+def _entity_matches_staff(query: str, staff: Staff) -> bool:
+    normalized_query = _normalize_entity_text(query)
+    if not normalized_query:
+        return False
+
+    username = _normalize_entity_text(getattr(staff, "telegram_username", None) or "")
+    if username and (normalized_query == username or username in normalized_query or normalized_query in username):
+        return True
+
+    return _entity_matches_name(query, staff.name)
+
+
 def _entity_matches_name(query: str, name: str) -> bool:
     normalized_query = _normalize_entity_text(query)
     normalized_name = _normalize_entity_text(name)
@@ -233,14 +246,12 @@ def _format_kb_search_answer(chunks: list[dict[str, Any]], query: str) -> str:
         return "В базе знаний сейчас не нашла точной информации по этому запросу."
 
     for chunk in filtered_chunks:
-        source_title = str(chunk.get("source_title") or "Источник")
-        source_url = str(chunk.get("source_url") or "no-url")
         excerpt = _relevant_excerpt(str(chunk.get("content") or ""), query)
-        dedupe_key = (source_title, excerpt)
+        dedupe_key = ("", excerpt)
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        lines.append(f"- {source_title}: {excerpt} ({source_url})")
+        lines.append(f"- {excerpt}")
         if len(lines) >= 3:
             break
 
@@ -257,10 +268,8 @@ def _filter_kb_chunks_for_query(chunks: list[dict[str, Any]], query: str) -> lis
 def _kb_fragments_for_synthesis(chunks: list[dict[str, Any]], query: str) -> list[str]:
     fragments: list[str] = []
     for chunk in chunks[:5]:
-        source_title = str(chunk.get("source_title") or "Источник")
-        source_url = str(chunk.get("source_url") or "no-url")
         excerpt = _relevant_excerpt(str(chunk.get("content") or ""), query, max_len=900)
-        fragments.append(f"{source_title}: {excerpt}. Источник: {source_url}")
+        fragments.append(excerpt)
     return fragments
 
 
@@ -269,6 +278,15 @@ def _is_ticket_summary_query(text: str) -> bool:
     ticket_words = ("задач", "тикет", "инцидент")
     summary_words = ("актуаль", "сейчас", "текущ", "список", "какие", "что есть", "статус")
     return any(word in lowered for word in ticket_words) and any(word in lowered for word in summary_words)
+
+
+def _infer_ticket_priority(text: str) -> TicketPriority:
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in ("критично", "критическая", "критический", "пожар", "немедленно", "прямо сейчас")):
+        return TicketPriority.critical
+    if any(marker in lowered for marker in ("срочно", "urgent", "asap", "как можно быстрее", "быстро")):
+        return TicketPriority.high
+    return TicketPriority.medium
 
 
 async def _build_ticket_summary_response(
@@ -297,6 +315,55 @@ async def _build_ticket_summary_response(
         action="answered",
         message=message,
         model_response=message,
+        author=response_author,
+        author_role=response_author_role,
+    )
+
+
+async def _build_knowledge_response(
+    *,
+    db: AsyncSession,
+    event_id: int,
+    planner: AlicePlanner,
+    question: str,
+    keywords: list[str] | None,
+    response_author: StaffAuthor | None,
+    response_author_role: RoleShort | None,
+) -> AgentCommandResponse:
+    search_query = " ".join([question, *(keywords or [])]).strip()
+    docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5)
+    exact_docs = _filter_kb_chunks_for_query(docs, question)
+    if not docs and not keywords:
+        message = "Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия."
+        return AgentCommandResponse(
+            action="question_asked",
+            message=message,
+            model_response=message,
+            author=response_author,
+            author_role=response_author_role,
+        )
+
+    if not exact_docs:
+        message = "Не нашла точный ответ в базе знаний. Передала вопрос администратору."
+        return AgentCommandResponse(
+            action="question_asked",
+            message=message,
+            model_response=message,
+            author=response_author,
+            author_role=response_author_role,
+        )
+    else:
+        synthesized = await planner.synthesize_knowledge_answer(
+            question=question,
+            rag_fragments=_kb_fragments_for_synthesis(exact_docs, question),
+            system_prompt=build_rag_informational_synthesis_prompt(),
+        )
+        info_answer = synthesized or _format_kb_search_answer(exact_docs, question)
+
+    return AgentCommandResponse(
+        action="answered",
+        message=info_answer,
+        model_response=info_answer,
         author=response_author,
         author_role=response_author_role,
     )
@@ -383,7 +450,6 @@ async def _load_kb_context(
     db: AsyncSession,
     *,
     event_id: int,
-    visible_clause: Any,
     query_text: str | None = None,
 ) -> list[str]:
     if query_text:
@@ -397,7 +463,6 @@ async def _load_kb_context(
             KnowledgeBaseLink.event_id == event_id,
             KnowledgeBaseLink.is_active.is_(True),
         )
-        .where(visible_clause)
         .order_by(KnowledgeBaseLink.id.asc())
         .limit(10)
     )
@@ -472,21 +537,6 @@ async def _ticket_visibility_clause(db: AsyncSession, staff: Staff) -> Any:
     )
 
 
-async def _kb_visibility_clause(db: AsyncSession, staff: Staff) -> Any:
-    if staff.is_admin:
-        return true()
-
-    can_see_confidential = await _can_see_confidential(db, staff)
-    return or_(
-        KnowledgeBaseLink.visibility == Visibility.public,
-        and_(KnowledgeBaseLink.visibility == Visibility.role_only, true() if staff.role_id else false()),
-        and_(
-            KnowledgeBaseLink.visibility == Visibility.confidential,
-            true() if can_see_confidential else false(),
-        ),
-    )
-
-
 async def _load_ticket_for_response(db: AsyncSession, *, event_id: int, ticket_id: int) -> Ticket | None:
     result = await db.execute(
         select(Ticket)
@@ -550,7 +600,7 @@ async def _resolve_assignees_with_rag(
             continue
 
         staff_result = await db.execute(select(Staff).where(Staff.event_id == event_id).order_by(Staff.id.asc()))
-        staff_matches = [staff for staff in staff_result.scalars().all() if _entity_matches_name(raw, staff.name)]
+        staff_matches = [staff for staff in staff_result.scalars().all() if _entity_matches_staff(raw, staff)]
         if len(staff_matches) == 1:
             staff_ids.append(int(staff_matches[0].id))
             continue
@@ -590,7 +640,7 @@ async def _find_staff_for_query(db: AsyncSession, *, event_id: int, query: str) 
         .order_by(Staff.id.asc())
     )
     candidates = list(result.scalars().all())
-    matches = [staff for staff in candidates if normalized in str(staff.name).lower() or _entity_matches_name(normalized, staff.name)]
+    matches = [staff for staff in candidates if _entity_matches_staff(normalized, staff)]
     if len(matches) == 1:
         return matches[0]
     return None
@@ -649,9 +699,8 @@ async def handle_command(
 
     event, roles, zones, free_staff_count = await _load_event_context(db, event_id=event_id)
     visible_clause = await _ticket_visibility_clause(db, current_staff)
-    kb_visible_clause = await _kb_visibility_clause(db, current_staff)
     admin_staff = await _load_admin_staff_names(db, event_id=event_id)
-    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause)
+    kb_context = await _load_kb_context(db, event_id=event_id)
     confidentiality_rules = await _load_confidentiality_rules(db, event_id=event_id)
     incident_summary = await _load_incident_summary(
         db,
@@ -763,6 +812,16 @@ async def handle_command(
                 response_author=response_author,
                 response_author_role=response_author_role,
             )
+        elif planned.kind == "knowledge_base":
+            response = await _build_knowledge_response(
+                db=db,
+                event_id=event_id,
+                planner=planner,
+                question=text,
+                keywords=planned.keywords,
+                response_author=response_author,
+                response_author_role=response_author_role,
+            )
         elif planned.kind in {"answered", "clarification"}:
             response = AgentCommandResponse(
                 action="question_asked" if planned.kind == "clarification" else "answered",
@@ -817,34 +876,15 @@ async def handle_command(
             response_author_role=response_author_role,
         )
     elif planned.kind == "knowledge_base":
-        search_query = " ".join([text, *(planned.keywords or [])]).strip()
-        docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5)
-        exact_docs = _filter_kb_chunks_for_query(docs, text)
-        if not docs and not planned.keywords:
-            response = AgentCommandResponse(
-                action="question_asked",
-                message="Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия.",
-                model_response="Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия.",
-                author=response_author,
-                author_role=response_author_role,
-            )
-        else:
-            if not exact_docs:
-                info_answer = "В базе знаний сейчас не нашла точной информации по этому запросу."
-            else:
-                synthesized = await planner.synthesize_knowledge_answer(
-                    question=text,
-                    rag_fragments=_kb_fragments_for_synthesis(exact_docs, text),
-                    system_prompt=build_rag_informational_synthesis_prompt(),
-                )
-                info_answer = synthesized or _format_kb_search_answer(exact_docs, text)
-            response = AgentCommandResponse(
-                action="answered",
-                message=info_answer,
-                model_response=info_answer,
-                author=response_author,
-                author_role=response_author_role,
-            )
+        response = await _build_knowledge_response(
+            db=db,
+            event_id=event_id,
+            planner=planner,
+            question=text,
+            keywords=planned.keywords,
+            response_author=response_author,
+            response_author_role=response_author_role,
+        )
     else:
         operational_target = (planned.target or "create").strip().lower()
 
@@ -972,6 +1012,7 @@ async def handle_command(
             created_ticket = await tools.create_ticket(
                 title=planned.title or "Операционная задача",
                 description=planned.description,
+                priority=_infer_ticket_priority(text),
                 target=target_payload,
                 assignee_role_id=(target_payload["role_ids"][0] if target_payload["role_ids"] else None),
                 ai_suggestion=ai_suggestion,

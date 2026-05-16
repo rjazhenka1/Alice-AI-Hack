@@ -19,6 +19,7 @@ from app.models import (
     StaffStatus,
     Ticket,
     TicketAssignment,
+    TicketPriority,
     TicketStatus,
     Visibility,
     Zone,
@@ -166,6 +167,30 @@ async def test_command_creates_ticket_on_operational_text(db_session: AsyncSessi
 
 
 @pytest.mark.asyncio
+async def test_command_sets_priority_from_urgency_words(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    urgent = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Срочно принесите удлинители в холл"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+    relaxed = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Не срочно принесите воду в штаб"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert urgent.ticket is not None
+    assert urgent.ticket.priority == TicketPriority.high
+    assert relaxed.ticket is not None
+    assert relaxed.ticket.priority == TicketPriority.low
+
+
+@pytest.mark.asyncio
 async def test_confirm_assigns_staff_and_updates_status(db_session: AsyncSession):
     event_id, coordinator_id, worker_id = await _seed_event_with_staff(db_session)
     coordinator = await _get_staff(db_session, coordinator_id)
@@ -193,7 +218,7 @@ async def test_confirm_assigns_staff_and_updates_status(db_session: AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session: AsyncSession):
+async def test_agent_prompt_uses_full_kb_and_confidentiality_rules(db_session: AsyncSession):
     event_id, _, _ = await _seed_event_with_staff(db_session)
     role = Role(event_id=event_id, name="Волонтёры", can_see_confidential=False)
     volunteer = Staff(event_id=event_id, name="Volunteer", role=role, status=StaffStatus.free)
@@ -234,7 +259,7 @@ async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session
 
     prompt = AlicePlanner._last_system_prompt  # type: ignore[attr-defined]
     assert "Публичный регламент" in prompt
-    assert "Закрытое решение жюри" not in prompt
+    assert "Закрытое решение жюри" in prompt
     assert "Решения жюри" in prompt
     assert "Не раскрывать до публикации" in prompt
 
@@ -265,7 +290,38 @@ async def test_informational_command_searches_document_chunks(db_session: AsyncS
 
     assert response.action == "answered"
     assert "Компьютерное зрение" in response.message
-    assert "Учебная справка" in response.message
+    assert "Учебная справка" not in response.message
+    assert "storage/documents" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_chat_mode_searches_document_chunks(db_session: AsyncSession):
+    event_id, _, worker_id = await _seed_event_with_staff(db_session)
+    worker = await _get_staff(db_session, worker_id)
+    from app.models import DocumentChunk
+
+    db_session.add(
+        DocumentChunk(
+            event_id=event_id,
+            content="31. Компьютерное зрение 3 з.е. отлично",
+            source_title="Учебная справка",
+            source_url="storage/documents/test.jpg",
+            chunk_index=0,
+        )
+    )
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Есть ли в базе знаний дисциплина Компьютерное зрение?", mode="chat"),
+        db=db_session,
+        current_staff=worker,
+    )
+
+    assert response.action == "answered"
+    assert "Компьютерное зрение" in response.message
+    assert "Учебная справка" not in response.message
+    assert "storage/documents" not in response.message
 
 
 def test_kb_answer_does_not_return_unrelated_vector_matches():

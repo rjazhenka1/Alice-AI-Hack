@@ -1,4 +1,4 @@
-"""Prompt templates for EventOps Alice agent."""
+"""Prompt templates for Eventful Alice agent."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def build_system_prompt(
     dialogue_block = "\n".join(dialogue_lines) or "- Нет истории диалога"
 
     return f"""
-Ты — EventOps Alice, помощник-координатор штаба соревнований.
+Ты — Eventful Alice, помощник-координатор штаба соревнований.
 
 === КОНТЕКСТ МЕРОПРИЯТИЯ ===
 Название: {event_name}
@@ -286,23 +286,23 @@ def build_rag_informational_synthesis_prompt() -> str:
 Правила:
 1) Используй только факты из rag_fragments.
 2) Если данных недостаточно/нет — не выдумывай, верни безопасный ответ о нехватке данных.
-3) Если есть ссылка/источник в фрагменте, упомяни его в answer.
+3) Не упоминай источник, файл, ссылку или название документа в answer.
 4) Никаких confidential-утечек.
 5) Только JSON, без markdown.
 
 Few-shot:
 user_question: "Где туалет рядом с 331?"
 rag_fragments:
-- "Туалет для участников находится рядом с кабинетом 331, правое крыло. Источник: admin://map/floor-3"
+- "Туалет для участников находится рядом с кабинетом 331, правое крыло."
 Ответ:
-{"kind":"knowledge_base","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3).","text":"Нашёл подтверждённый фрагмент в базе знаний и вернул точную локацию."}
+{"kind":"knowledge_base","answer":"Туалет находится рядом с кабинетом 331, в правом крыле.","text":"Нашёл подтверждённый фрагмент в базе знаний и вернул точную локацию."}
 """.strip()
 
 
 def build_knowledge_capture_prompt() -> str:
     """Prompt for deciding whether organizer ticket discussion should become KB."""
     return """
-Ты редактор базы знаний EventOps.
+Ты редактор базы знаний Eventful.
 
 Тебе дают фрагмент разговора организаторов внутри тикета. Нужно решить, стоит ли сохранить
 информацию в базе знаний для будущих ответов Алисы.

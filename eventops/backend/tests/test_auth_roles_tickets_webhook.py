@@ -23,11 +23,12 @@ async def test_auth_login_returns_valid_jwt(client: AsyncClient, db_session: Asy
         event.id,
         name="Admin",
         telegram_id="1001",
+        telegram_username="admin_user",
         is_admin=True,
     )
     await db_session.commit()
 
-    response = await client.post("/auth/login", json={"telegram_id": "1001"})
+    response = await client.post("/auth/login", json={"telegram_username": "@admin_user"})
 
     assert response.status_code == 200
     body = response.json()
@@ -45,6 +46,23 @@ async def test_auth_login_returns_valid_jwt(client: AsyncClient, db_session: Asy
     )
     assert events_response.status_code == 200
     assert events_response.json()[0]["id"] == event.id
+
+
+async def test_auth_login_bootstraps_first_admin_from_env(client: AsyncClient, monkeypatch):
+    monkeypatch.setenv("ADMIN_TELEGRAM_USERNAME", "@BellatorHonoris")
+
+    response = await client.post("/auth/login", json={"telegram_username": "@BellatorHonoris"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_admin"] is True
+
+    events_response = await client.get(
+        "/events",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+    )
+    assert events_response.status_code == 200
+    assert events_response.json()[0]["name"] == "Первое мероприятие"
 
 
 async def test_roles_create_and_list_requires_event_admin(client: AsyncClient, db_session: AsyncSession):

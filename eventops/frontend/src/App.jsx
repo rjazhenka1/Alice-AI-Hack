@@ -24,6 +24,8 @@ const titles = {
   settings: "Настройки",
 };
 
+const APP_NAME = "Eventful";
+
 function navGridClass(count) {
   if (count === 2) {
     return "grid-cols-2";
@@ -72,7 +74,7 @@ const DEMO_TICKETS = [
     id: 1,
     title: "Очередь на регистрации",
     description: "Нужны два свободных человека у входа.",
-    priority: "high",
+    priority: "medium",
     status: "waiting",
     assignments: [
       {
@@ -143,8 +145,10 @@ export default function App() {
   const [isConfirming, setIsConfirming] = useState(false);
   const [isEventsLoading, setIsEventsLoading] = useState(false);
   const [isLoginLoading, setIsLoginLoading] = useState(false);
+  const [isAuthVerified, setIsAuthVerified] = useState(false);
   const [messages, setMessages] = useState([]);
   const [messagesError, setMessagesError] = useState("");
+  const [broadcastMode, setBroadcastMode] = useState(false);
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [myContext, setMyContext] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -187,6 +191,41 @@ export default function App() {
     : tabs;
   const pageTitle =
     isVolunteerMode && activeTab === "tickets" ? "Мои задачи" : titles[activeTab];
+
+  useEffect(() => {
+    if (!token || isDemoMode) {
+      setIsAuthVerified(Boolean(token && isDemoMode));
+      return undefined;
+    }
+
+    let isActive = true;
+    setIsAuthVerified(false);
+
+    api
+      .getMe()
+      .then((data) => {
+        if (!isActive) {
+          return;
+        }
+
+        setCurrentStaff({
+          id: data.staff_id,
+          isAdmin: data.is_admin,
+        });
+        setIsAuthVerified(true);
+      })
+      .catch((error) => {
+        if (isActive && (error.status === 401 || error.status === 403)) {
+          logout();
+        } else if (isActive) {
+          setIsAuthVerified(true);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isDemoMode, logout, setCurrentStaff, token]);
 
   useEffect(() => {
     if (isVolunteerMode && !visibleTabs.some((tab) => tab.id === activeTab)) {
@@ -266,21 +305,30 @@ export default function App() {
             return message.from_staff_id !== currentStaff?.id;
           }
 
-          return message.to_staff_id === currentStaff?.id && !message.content.startsWith("Ответ по задаче #");
+          return (
+            (message.to_staff_id === currentStaff?.id ||
+              (message.visibility === "public" && !message.to_staff_id && !message.to_role_id)) &&
+            !message.content.startsWith("Ответ по задаче #")
+          );
         })
         .slice(0, 10)
-        .map((message) => ({
-          id: `message-${message.id}`,
-          messageId: message.id,
-          staffId: message.from_staff_id,
-          senderName:
-            staff.find((person) => person.id === message.from_staff_id)?.name ||
-            (isAdminMode ? "Участник" : "Администратор"),
-          from: isAdminMode ? "admin" : "alice",
-          text: message.content,
-          canReply: isAdminMode && Boolean(message.from_staff_id),
-          createdAt: message.created_at,
-        }));
+        .map((message) => {
+          const isPublicBroadcast =
+            message.visibility === "public" && !message.to_staff_id && !message.to_role_id;
+
+          return {
+            id: `message-${message.id}`,
+            messageId: message.id,
+            staffId: message.from_staff_id,
+            senderName:
+              staff.find((person) => person.id === message.from_staff_id)?.name ||
+              (isAdminMode ? "Участник" : "Администратор"),
+            from: isAdminMode || isPublicBroadcast ? "admin" : "alice",
+            text: message.content,
+            canReply: isAdminMode && Boolean(message.from_staff_id),
+            createdAt: message.created_at,
+          };
+        });
 
       return incoming.length > 0 ? [...items, ...incoming] : items;
     });
@@ -440,47 +488,25 @@ export default function App() {
       return;
     }
 
-    if (isDemoMode) {
-      const myTickets = tickets.filter((ticket) =>
-        (ticket.assignments || []).some(
-          (assignment) => assignment.staff?.id === currentStaff.id,
-        ),
-      );
+    const myTickets = tickets.filter((ticket) =>
+      (ticket.assignments || []).some(
+        (assignment) => assignment.staff?.id === currentStaff.id,
+      ),
+    );
 
-      setMyContext({
-        my_tickets: isVolunteerMode ? myTickets : tickets,
-        my_messages: messages,
-        role_tickets: isVolunteerMode ? myTickets : tickets,
-      });
-      return;
-    }
+    setMyContext({
+      my_tickets: isVolunteerMode ? myTickets : tickets,
+      my_messages: messages,
+      role_tickets: isVolunteerMode ? myTickets : tickets,
+    });
+  }, [currentStaff?.id, isVolunteerMode, messages, selectedEventId, tickets]);
 
-    let isActive = true;
-
-    api
-      .getStaffContext(selectedEventId, currentStaff.id)
-      .then((context) => {
-        if (isActive) {
-          setMyContext(context);
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          setMyContext(null);
-        }
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [currentStaff?.id, isDemoMode, isVolunteerMode, messages, refreshKey, selectedEventId, tickets]);
-
-  const login = async (telegramId) => {
+  const login = async (telegramUsername) => {
     setAuthError("");
     setIsLoginLoading(true);
 
     try {
-      const data = await api.login(telegramId);
+      const data = await api.login(telegramUsername);
       setToken(data.access_token);
       setCurrentStaff({
         id: data.staff_id,
@@ -534,8 +560,14 @@ export default function App() {
   };
 
   const routeUnansweredQuestion = async (text) => {
-    const content = `${currentStaff?.name || "Участник"}: ${text}`;
-    await sendMessage({ content, visibility: "public" });
+    const content = `Вопрос от ${currentStaffProfile?.name || currentStaff?.name || "участника"}: ${text}`;
+    const admin = staff.find((person) => person.is_admin && person.id !== currentStaff?.id);
+
+    await sendMessage(
+      admin
+        ? { content, to_staff_id: admin.id, visibility: "role_only" }
+        : { content, visibility: "public" },
+    );
   };
 
   const handleChatReply = async (target, content) => {
@@ -556,6 +588,21 @@ export default function App() {
       visibility: "role_only",
     });
     setReplyTarget(null);
+  };
+
+  const sendBroadcastMessage = async (content) => {
+    const text = content.trim();
+    if (!text) {
+      return;
+    }
+
+    await sendMessage({ content: text, visibility: "public" });
+    appendChat({
+      from: "me",
+      text: `Всем: ${text}`,
+      source: "admin_broadcast",
+    });
+    setBroadcastMode(false);
   };
 
   const loadTicketReplies = async (ticketId) => {
@@ -1044,8 +1091,6 @@ export default function App() {
       <LoginForm
         error={authError}
         isLoading={isLoginLoading}
-        onDemoAdmin={() => startDemo("admin")}
-        onDemoVolunteer={() => startDemo("volunteer")}
         onSubmit={login}
       />
     );
@@ -1056,7 +1101,7 @@ export default function App() {
       <div className="mx-auto flex min-h-screen max-w-md flex-col bg-white">
         <header className="border-b border-violet-100 px-4 py-3">
           <p className="text-xs font-semibold uppercase text-violet-700">
-            EventOps AI
+            {APP_NAME}
           </p>
           <div className="mt-2 flex items-center justify-between gap-3">
             <h1 className="text-lg font-semibold">{pageTitle}</h1>
@@ -1085,12 +1130,15 @@ export default function App() {
                 </p>
               ) : null}
               <ChatPanel
+                broadcastMode={isAdminMode && broadcastMode}
                 chat={chat}
                 disabled={!selectedEvent}
                 isLoading={isCommandLoading}
                 mode={isAdminMode ? "admin" : "volunteer"}
                 replyTarget={isAdminMode ? replyTarget : null}
+                onBroadcastToggle={isAdminMode ? () => setBroadcastMode((value) => !value) : undefined}
                 onCancelReply={() => setReplyTarget(null)}
+                onSendBroadcast={isAdminMode ? sendBroadcastMessage : undefined}
                 onReply={isAdminMode ? handleChatReply : undefined}
                 onSendAudio={sendChatAudio}
                 onSendText={sendChatText}
