@@ -4,6 +4,7 @@ import AliceResponse from "./components/AliceResponse.jsx";
 import CommandBar from "./components/CommandBar.jsx";
 import EventSelector from "./components/EventSelector.jsx";
 import LoginForm from "./components/LoginForm.jsx";
+import TicketTable from "./components/TicketTable.jsx";
 import { useAppStore } from "./store/useAppStore.js";
 
 const tabs = [
@@ -32,6 +33,9 @@ export default function App() {
   const [isEventsLoading, setIsEventsLoading] = useState(false);
   const [isLoginLoading, setIsLoginLoading] = useState(false);
   const [lastCommand, setLastCommand] = useState(null);
+  const [tickets, setTickets] = useState([]);
+  const [ticketsError, setTicketsError] = useState("");
+  const [isTicketsLoading, setIsTicketsLoading] = useState(false);
   const eventId = useAppStore((state) => state.eventId);
   const token = useAppStore((state) => state.token);
   const logout = useAppStore((state) => state.logout);
@@ -39,6 +43,7 @@ export default function App() {
   const setEventId = useAppStore((state) => state.setEventId);
   const setToken = useAppStore((state) => state.setToken);
   const selectedEvent = events.find((event) => String(event.id) === eventId);
+  const selectedEventId = selectedEvent?.id;
 
   useEffect(() => {
     if (!token) {
@@ -77,6 +82,46 @@ export default function App() {
       isActive = false;
     };
   }, [eventId, setEventId, token]);
+
+  useEffect(() => {
+    if (!selectedEventId) {
+      setTickets([]);
+      return;
+    }
+
+    let isActive = true;
+
+    const loadTickets = () => {
+      setTicketsError("");
+      setIsTicketsLoading(true);
+
+      api
+        .getTickets(selectedEventId)
+        .then((items) => {
+          if (isActive) {
+            setTickets(items);
+          }
+        })
+        .catch((error) => {
+          if (isActive) {
+            setTicketsError(error.message);
+          }
+        })
+        .finally(() => {
+          if (isActive) {
+            setIsTicketsLoading(false);
+          }
+        });
+    };
+
+    loadTickets();
+    const timer = window.setInterval(loadTickets, 5000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedEventId]);
 
   const login = async (telegramId) => {
     setAuthError("");
@@ -222,6 +267,12 @@ export default function App() {
                 onReject={(ticketId) => confirmSuggestion(ticketId, [], false)}
               />
             </div>
+          ) : activeTab === "tickets" ? (
+            <TicketTable
+              error={ticketsError}
+              isLoading={isTicketsLoading}
+              tickets={tickets}
+            />
           ) : (
             <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
               <p className="text-sm text-slate-600">
