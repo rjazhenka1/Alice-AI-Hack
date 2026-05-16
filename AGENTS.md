@@ -177,6 +177,24 @@ POST   /events/{id}/messages            body: MessageCreate → Message
 PATCH  /events/{id}/messages/{mid}/read → Message
 ```
 
+### Knowledge Base & Confidentiality (backend requirement)
+Минимум, который должен храниться в бэкенде для качественной работы Алисы:
+
+1) **База ссылок на знания** (Knowledge Base links)
+- `title` — человекочитаемое название документа
+- `url` — ссылка/указатель на материал (внешняя ссылка или внутренний `admin://...`)
+- `description` — краткое описание, что именно в документе
+- `tags` — опциональные теги для поиска
+- `is_active` — можно ли использовать в ответах
+- `visibility` — уровень доступа к записи (`public` / `role_only` / `confidential`)
+
+2) **Правила конфиденциальности** (Confidentiality rules)
+- Явный перечень, какие данные считаются confidential для текущего мероприятия.
+- Примеры категорий: персональные контакты, внутренние телефоны штабов, закрытые решения жюри,
+  сведения по дисквалификациям до публикации, служебные перемещения сотрудников, приватные инциденты.
+- Для каждой категории задаётся `description` и `severity` (например: `high|medium|low`).
+- Эти правила используются в prompt/router для запрета утечки в user-facing ответ.
+
 ### Telegram integration
 ```
 POST   /integrations/telegram/webhook
