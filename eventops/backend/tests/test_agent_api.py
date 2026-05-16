@@ -107,6 +107,8 @@ async def test_command_audio_transcribes_and_runs_regular_flow(db_session: Async
 
     assert response.action == "ticket_created"
     assert response.ticket is not None
+    assert response.ticket.previous_messages[-1]["text"] == "На входе толпа, срочно помогите"
+    assert response.ticket.previous_messages[-1]["audio_file"].endswith(".oga")
 
 
 @pytest.mark.asyncio
@@ -145,6 +147,50 @@ async def test_command_creates_ticket_on_operational_text(db_session: AsyncSessi
     assert isinstance(response.ticket.target["staff_ids"], list)
     assert len(response.ticket.target["staff_ids"]) >= 1
     assert response.ticket.target["role_ids"] == []
+    assert response.ticket.previous_messages == [
+        {
+            "role": "user",
+            "text": "На входе толпа, срочно помогите",
+            "source": "agent_text",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_command_keeps_previous_messages_until_ticket_created(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    clarification = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Нужны люди"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+    assert clarification.action == "question_asked"
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="На входе толпа, срочно помогите"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert [item["text"] for item in response.ticket.previous_messages] == [
+        "Нужны люди",
+        "Уточни количество",
+        "На входе толпа, срочно помогите",
+    ]
+
+    session = await db_session.scalar(
+        select(AgentSession).where(
+            AgentSession.event_id == event_id,
+            AgentSession.staff_id == coordinator.id,
+        )
+    )
+    assert session is not None
+    assert session.context == []
 
 
 @pytest.mark.asyncio

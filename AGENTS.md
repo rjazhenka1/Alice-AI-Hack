@@ -115,6 +115,7 @@ ALICE_FOLDER_ID=<folder id Yandex Cloud>
 TELEGRAM_BOT_TOKEN=<токен бота>
 TELEGRAM_WEBHOOK_SECRET=<опциональный секрет для Telegram webhook-запросов>
 TELEGRAM_VOICE_DIR=storage/telegram_voice
+AGENT_AUDIO_DIR=storage/agent_audio
 SECRET_KEY=<случайная строка для JWT>
 ```
 
@@ -173,6 +174,10 @@ PATCH  /events/{id}/tickets/{tid}/assignments/{aid}  body: ConfirmAssignmentRequ
 ```
 
 `Ticket` в ответах содержит отправителя/создателя: `sender` и `created_by` как `StaffShort`.
+`Ticket.previous_messages` хранит все сообщения, из которых была создана задача: текст, источник
+(`agent_text`, `agent_audio`, `telegram_text`, `telegram_voice`) и `audio_file`, если сообщение было голосовым.
+Цепочка ведётся на бэкенде отдельно для каждого пользователя (`event_id + current_staff.id`); фронт не
+собирает её сам в agent flow. Буфер сбрасывается, когда Алиса создала задачу (`ticket_created`) или закрыла вопрос (`answered`).
 `TicketReply` — ответ/комментарий к тикету от участника; доступ к списку ответов возможен только если
 пользователь видит сам тикет. Confidential-ответы видят только admin и роли с `can_see_confidential=True`.
 

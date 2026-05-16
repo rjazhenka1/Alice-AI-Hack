@@ -134,6 +134,14 @@ class TicketCreate(BaseModel):
     visibility:       Visibility       = Visibility.public
     assignee_role_id: Optional[int]   = None
     target:           Optional[dict[str, Any]] = None
+    previous_messages: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Дополнительное поле для ручного создания/импорта тикета. "
+            "В agent flow фронт не заполняет это поле: бэкенд сам ведёт цепочку "
+            "отдельно для каждого current_staff внутри мероприятия."
+        ),
+    )
 
 class TicketUpdate(BaseModel):
     title:            Optional[str]            = None
@@ -144,6 +152,10 @@ class TicketUpdate(BaseModel):
     visibility:       Optional[Visibility]      = None
     assignee_role_id: Optional[int]            = None
     target:           Optional[dict[str, Any]] = None
+    previous_messages: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description="Ручное обновление цепочки исходных сообщений тикета.",
+    )
 
 class TicketAssignmentOut(BaseModel):
     id:          int
@@ -186,6 +198,14 @@ class Ticket(BaseModel):
     created_by:       Optional[StaffShort] = None
     assignee_role_id: Optional[int]
     target:           dict[str, Any] = {"all": False, "role_ids": [], "staff_ids": []}
+    previous_messages: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Сообщения, из которых была создана задача. Для agent flow цепочка "
+            "ведётся бэкендом отдельно для каждого пользователя и сбрасывается "
+            "после создания задачи или закрытия вопроса."
+        ),
+    )
     ai_suggestion:    Optional[dict[str, Any]]
     assignments:      list[TicketAssignmentOut] = []
     created_at:       datetime

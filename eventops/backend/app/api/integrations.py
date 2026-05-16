@@ -144,12 +144,20 @@ async def _transcribe_voice_file(file_path: Path) -> str:
     return await SpeechKitClient().transcribe_audio_base64(audio_base64=audio_base64)
 
 
-async def _answer_with_alice(db: AsyncSession, staff: Staff, text: str) -> str:
+async def _answer_with_alice(
+    db: AsyncSession,
+    staff: Staff,
+    text: str,
+    *,
+    audio_file: str | None = None,
+) -> str:
     response = await handle_command(
         db=db,
         event_id=staff.event_id,
         current_staff=staff,
         text=text,
+        source="telegram_voice" if audio_file else "telegram_text",
+        audio_file=audio_file,
     )
     return response.message
 
@@ -203,7 +211,7 @@ async def telegram_webhook(
             f"{_voice_message_content(voice, voice_path)} transcript={transcribed_text}",
         )
         try:
-            reply = await _answer_with_alice(db, staff, transcribed_text)
+            reply = await _answer_with_alice(db, staff, transcribed_text, audio_file=str(voice_path))
         except Exception:
             logger.exception("Failed to answer Telegram voice via Alice: telegram_id=%s", telegram_id)
             reply = f"Распознала голосовое: {transcribed_text}\nНо не смогла получить ответ Алисы."

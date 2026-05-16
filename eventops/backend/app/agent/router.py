@@ -41,6 +41,33 @@ def _trim_context(context: list[dict[str, str]]) -> list[dict[str, str]]:
     return context[-MAX_SESSION_MESSAGES:]
 
 
+def _message_record(*, role: str, text: str, audio_file: str | None = None, source: str | None = None) -> dict[str, str]:
+    record = {"role": role, "text": text}
+    if audio_file:
+        record["audio_file"] = audio_file
+    if source:
+        record["source"] = source
+    return record
+
+
+def _previous_messages(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in _trim_context(context):
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        record: dict[str, Any] = {
+            "role": str(item.get("role") or "unknown"),
+            "text": text,
+        }
+        if item.get("audio_file"):
+            record["audio_file"] = str(item["audio_file"])
+        if item.get("source"):
+            record["source"] = str(item["source"])
+        messages.append(record)
+    return messages
+
+
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
 
@@ -257,10 +284,12 @@ async def handle_command(
     event_id: int,
     current_staff: Staff,
     text: str,
+    source: str | None = None,
+    audio_file: str | None = None,
 ) -> AgentCommandResponse:
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
     context = list(session.context or [])
-    context.append({"role": "user", "text": text})
+    context.append(_message_record(role="user", text=text, audio_file=audio_file, source=source))
 
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)
     planner = AlicePlanner()
@@ -332,7 +361,7 @@ async def handle_command(
             )
 
         context.append({"role": "assistant", "text": response.message})
-        session.context = _trim_context(context)
+        session.context = [] if response.action == "answered" else _trim_context(context)
         await db.commit()
         return response
 
@@ -383,6 +412,7 @@ async def handle_command(
         created_ticket = await tools.create_ticket(
             title=planned.title or "Операционная задача",
             description=planned.description,
+            previous_messages=_previous_messages(context),
             ai_suggestion=ai_suggestion,
         )
         ticket_for_response = await _load_ticket_for_response(db, event_id=event_id, ticket_id=created_ticket.id)
@@ -403,7 +433,10 @@ async def handle_command(
         )
 
     context.append({"role": "assistant", "text": response.message})
-    session.context = _trim_context(context)
+    if response.action in {"ticket_created", "answered"}:
+        session.context = []
+    else:
+        session.context = _trim_context(context)
     await db.commit()
     return response
 

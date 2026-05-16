@@ -110,7 +110,10 @@ async def create_ticket(
     await _ensure_role(db, event_id, payload.assignee_role_id)
     await _ensure_can_use_visibility(db, current_staff, payload.visibility)
 
-    ticket = Ticket(event_id=event_id, created_by_id=current_staff.id, **payload.model_dump())
+    data = payload.model_dump()
+    previous_messages = data.pop("previous_messages", None)
+    ticket = Ticket(event_id=event_id, created_by_id=current_staff.id, **data)
+    ticket.previous_messages = previous_messages
     db.add(ticket)
     await db.commit()
     loaded = await _load_ticket(db, event_id, ticket.id)
@@ -143,8 +146,11 @@ async def update_ticket(
         await _ensure_role(db, event_id, data["assignee_role_id"])
     if "visibility" in data:
         await _ensure_can_use_visibility(db, current_staff, data["visibility"])
+    previous_messages = data.pop("previous_messages", None)
     for key, value in data.items():
         setattr(ticket, key, value)
+    if previous_messages is not None:
+        ticket.previous_messages = previous_messages
 
     await db.commit()
     loaded = await _load_ticket(db, event_id, ticket.id)

@@ -372,6 +372,16 @@ components:
           description: |
             Целевая аудитория задачи (все / роли / конкретные сотрудники).
             При отсутствии бэкенд формирует target автоматически.
+        previous_messages:
+          type: array
+          nullable: true
+          description: |
+            Только для ручного создания/импорта тикета. В agent flow фронт не заполняет это поле:
+            бэкенд сам ведёт отдельную цепочку для каждого authenticated staff внутри мероприятия.
+            Каждый элемент может содержать `role`, `text`, `source`, `audio_file`.
+          items:
+            type: object
+            additionalProperties: true
 
     TicketUpdate:
       type: object
@@ -395,6 +405,13 @@ components:
         target:
           $ref: '#/components/schemas/TicketTargetPatch'
           description: Обновление целевой аудитории задачи
+        previous_messages:
+          type: array
+          nullable: true
+          description: Обновление цепочки исходных сообщений задачи
+          items:
+            type: object
+            additionalProperties: true
 
     TicketAssignmentOut:
       type: object
@@ -486,6 +503,15 @@ components:
             all: false
             role_ids: []
             staff_ids: []
+        previous_messages:
+          type: array
+          description: |
+            Все сообщения, которые привели к созданию задачи: тексты, источник и путь к аудиофайлу,
+            если команда пришла голосом. В agent flow цепочка ведётся бэкендом отдельно для каждого
+            пользователя (`event_id + current_staff`) и сбрасывается после создания задачи или закрытия вопроса.
+          items:
+            type: object
+            additionalProperties: true
         ai_suggestion:
           type: object
           nullable: true

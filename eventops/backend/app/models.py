@@ -210,6 +210,20 @@ class Ticket(Base):
         }
         self.ai_suggestion = payload
 
+    @property
+    def previous_messages(self) -> list[dict[str, Any]]:
+        payload = self.ai_suggestion if isinstance(self.ai_suggestion, dict) else {}
+        raw = payload.get("previous_messages") if isinstance(payload, dict) else None
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, dict)]
+        return []
+
+    @previous_messages.setter
+    def previous_messages(self, value: list[dict[str, Any]] | None) -> None:
+        payload = self.ai_suggestion if isinstance(self.ai_suggestion, dict) else {}
+        payload["previous_messages"] = [item for item in value or [] if isinstance(item, dict)]
+        self.ai_suggestion = payload
+
 
 class TicketAssignment(Base):
     """

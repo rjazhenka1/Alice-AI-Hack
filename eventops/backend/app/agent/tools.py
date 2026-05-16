@@ -69,6 +69,7 @@ class AgentTools:
         visibility: Visibility = Visibility.public,
         assignee_role_id: int | None = None,
         target: dict[str, Any] | None = None,
+        previous_messages: list[dict[str, Any]] | None = None,
         ai_suggestion: dict[str, Any] | None = None,
     ) -> Ticket:
         resolved_target = self._resolve_target(
@@ -90,6 +91,7 @@ class AgentTools:
             ai_suggestion=ai_suggestion,
         )
         ticket.target = resolved_target
+        ticket.previous_messages = previous_messages
         self.db.add(ticket)
         await self.db.flush()
         await self.db.refresh(ticket)

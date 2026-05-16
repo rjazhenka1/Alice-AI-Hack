@@ -254,8 +254,9 @@ async def test_telegram_webhook_voice_transcribes_and_answers(
         assert path == voice_path
         return "Что мне делать?"
 
-    async def fake_answer(db, staff, text):
+    async def fake_answer(db, staff, text, **kwargs):
         assert text == "Что мне делать?"
+        assert kwargs["audio_file"] == str(voice_path)
         return "Твоя текущая задача: быть на регистрации."
 
     async def fake_enqueue_notification(payload: dict[str, str]) -> None:
