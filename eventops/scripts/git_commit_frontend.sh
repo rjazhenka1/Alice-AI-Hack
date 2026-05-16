@@ -23,7 +23,6 @@ echo "Staged frontend/script changes:"
 git diff --cached --stat -- "${PATHS[@]}"
 echo
 
-git commit -m "$MESSAGE"
+git commit -m "$MESSAGE" -- "${PATHS[@]}"
 echo
 git status --short --branch --untracked-files=all
-
