@@ -169,6 +169,7 @@ POST   /events/{id}/tickets             body: TicketCreate → Ticket
 PATCH  /events/{id}/tickets/{tid}       body: TicketUpdate → Ticket
 GET    /events/{id}/tickets/{tid}/replies → TicketReply[]
 POST   /events/{id}/tickets/{tid}/replies body: TicketReplyCreate → TicketReply
+POST   /events/{id}/tickets/{tid}/documents multipart(file,title?) → DocumentAttachment
 POST   /events/{id}/tickets/{tid}/assign  body: AssignRequest → Ticket
 PATCH  /events/{id}/tickets/{tid}/assignments/{aid}  body: ConfirmAssignmentRequest → TicketAssignment
 ```
@@ -209,6 +210,7 @@ PATCH  /events/{id}/messages/{mid}/read → Message
 ```
 GET    /events/{id}/knowledge
 POST   /events/{id}/knowledge                 body: KnowledgeBaseLinkCreate → KnowledgeBaseLink
+POST   /events/{id}/knowledge/upload          multipart(file,title?,description?,tags?,visibility?,is_active?) → KnowledgeBaseLink
 PATCH  /events/{id}/knowledge/{kid}           body: KnowledgeBaseLinkUpdate → KnowledgeBaseLink
 GET    /events/{id}/confidentiality-rules
 POST   /events/{id}/confidentiality-rules     body: ConfidentialityRuleCreate → ConfidentialityRule

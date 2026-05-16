@@ -1,6 +1,9 @@
+import re
+from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import and_, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +14,28 @@ from ..models import ConfidentialityRule, KnowledgeBaseLink, Staff, Visibility
 from .common import can_see_confidential, ensure_event_access
 
 router = APIRouter(prefix="/events/{event_id}", tags=["knowledge"])
+
+
+def _document_storage_dir() -> Path:
+    return Path("storage/documents")
+
+
+def _safe_filename(value: str) -> str:
+    name = Path(value or "document").name
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name) or "document"
+
+
+def _parse_tags(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+async def _save_upload(file: UploadFile, destination: Path) -> int:
+    content = await file.read()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(content)
+    return len(content)
 
 
 async def _kb_visibility_filter(db: AsyncSession, staff: Staff) -> Any:
@@ -57,6 +82,40 @@ async def create_knowledge_link(
     await ensure_event_access(event_id, current_staff)
     await _require_admin(current_staff)
     link = KnowledgeBaseLink(event_id=event_id, **payload.model_dump())
+    db.add(link)
+    await db.commit()
+    await db.refresh(link)
+    return link
+
+
+@router.post("/knowledge/upload", response_model=schemas.KnowledgeBaseLink, status_code=status.HTTP_201_CREATED)
+async def upload_knowledge_document(
+    event_id: int,
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    description: str | None = Form(default=None),
+    tags: str | None = Form(default=None, description="Comma-separated tags"),
+    visibility: Visibility = Form(default=Visibility.public),
+    is_active: bool = Form(default=True),
+    db: AsyncSession = Depends(get_db),
+    current_staff: Staff = Depends(get_current_staff),
+) -> KnowledgeBaseLink:
+    await ensure_event_access(event_id, current_staff)
+    await _require_admin(current_staff)
+
+    document_id = uuid4().hex
+    filename = _safe_filename(file.filename or "document")
+    destination = _document_storage_dir() / str(event_id) / "knowledge" / f"{document_id}_{filename}"
+    await _save_upload(file, destination)
+    link = KnowledgeBaseLink(
+        event_id=event_id,
+        title=title or filename,
+        url=str(destination),
+        description=description,
+        tags=_parse_tags(tags),
+        is_active=is_active,
+        visibility=visibility,
+    )
     db.add(link)
     await db.commit()
     await db.refresh(link)

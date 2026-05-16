@@ -30,6 +30,8 @@ tags:
     description: Зоны площадки
   - name: tickets
     description: Тикеты и задачи
+  - name: knowledge
+    description: База знаний
   - name: messages
     description: Сообщения и вопросы
   - name: agent
@@ -462,6 +464,31 @@ components:
           type: string
           format: date-time
 
+    DocumentAttachment:
+      type: object
+      required: [id, title, filename, size, path, created_at]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        filename:
+          type: string
+        content_type:
+          type: string
+          nullable: true
+        size:
+          type: integer
+        path:
+          type: string
+          description: Локальный путь к сохранённому файлу
+        uploaded_by_id:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
     Ticket:
       type: object
       required: [id, event_id, title, type, priority, status, visibility, created_at, updated_at]
@@ -512,6 +539,10 @@ components:
           items:
             type: object
             additionalProperties: true
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentAttachment'
         ai_suggestion:
           type: object
           nullable: true
@@ -615,6 +646,64 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Ticket'
+
+    KnowledgeBaseLinkCreate:
+      type: object
+      required: [title, url]
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        description:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+          default: true
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+          default: public
+
+    KnowledgeBaseLinkUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        description:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+
+    KnowledgeBaseLink:
+      allOf:
+        - $ref: '#/components/schemas/KnowledgeBaseLinkCreate'
+        - type: object
+          required: [id, event_id, created_at, updated_at]
+          properties:
+            id:
+              type: integer
+            event_id:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
 
     # ─── Agent ──────────────────────────────────────────────────────────────
 
@@ -1334,6 +1423,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/TicketReply'
 
+  /events/{event_id}/tickets/{ticket_id}/documents:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: ticket_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [tickets]
+      summary: Прикрепить документ к тикету
+      description: Multipart upload. Доступно пользователям, которые видят тикет.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+                  nullable: true
+      responses:
+        '201':
+          description: Документ прикреплён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentAttachment'
+
   /events/{event_id}/tickets/{ticket_id}/assignments/{assignment_id}:
     parameters:
       - name: event_id
@@ -1368,6 +1495,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TicketAssignmentOut'
+
+  # ── Knowledge Base ───────────────────────────────────────────────────────
+
+  /events/{event_id}/knowledge:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [knowledge]
+      summary: Список материалов базы знаний
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KnowledgeBaseLink'
+    post:
+      tags: [knowledge]
+      summary: Добавить ссылку в базу знаний
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgeBaseLinkCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseLink'
+
+  /events/{event_id}/knowledge/upload:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [knowledge]
+      summary: Загрузить документ в базу знаний
+      description: Multipart upload. Доступно только организатору/admin.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+                  nullable: true
+                description:
+                  type: string
+                  nullable: true
+                tags:
+                  type: string
+                  nullable: true
+                  description: Comma-separated tags
+                visibility:
+                  $ref: '#/components/schemas/Visibility'
+                is_active:
+                  type: boolean
+                  default: true
+      responses:
+        '201':
+          description: Документ загружен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseLink'
+
+  /events/{event_id}/knowledge/{link_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: link_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    patch:
+      tags: [knowledge]
+      summary: Обновить материал базы знаний
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgeBaseLinkUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseLink'
 
   # ── Messages ──────────────────────────────────────────────────────────────
 

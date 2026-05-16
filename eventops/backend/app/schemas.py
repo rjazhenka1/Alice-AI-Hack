@@ -184,6 +184,17 @@ class TicketReply(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DocumentAttachment(BaseModel):
+    id: str
+    title: str
+    filename: str
+    content_type: Optional[str] = None
+    size: int
+    path: str
+    uploaded_by_id: Optional[int] = None
+    created_at: datetime
+
+
 class Ticket(BaseModel):
     id:               int
     event_id:         int
@@ -206,6 +217,7 @@ class Ticket(BaseModel):
             "после создания задачи или закрытия вопроса."
         ),
     )
+    documents:        list[DocumentAttachment] = Field(default_factory=list)
     ai_suggestion:    Optional[dict[str, Any]]
     assignments:      list[TicketAssignmentOut] = []
     created_at:       datetime
