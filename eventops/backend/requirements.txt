@@ -1,0 +1,12 @@
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+sqlalchemy==2.0.49
+asyncpg==0.31.0
+aiosqlite==0.22.1
+pydantic==2.13.4
+PyJWT==2.12.1
+python-multipart==0.0.28
+httpx==0.28.1
+yandex-ai-studio-sdk>=0.20.0,<0.21.0
+pytest==8.4.2
+pytest-asyncio==1.2.0
