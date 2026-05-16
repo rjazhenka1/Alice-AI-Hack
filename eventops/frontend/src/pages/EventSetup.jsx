@@ -43,8 +43,10 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
   const [catalogError, setCatalogError] = useState("");
   const [eventForm, setEventForm] = useState(emptyEvent);
   const [formError, setFormError] = useState("");
+  const [importText, setImportText] = useState("");
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [knowledgeItems, setKnowledgeItems] = useState([]);
   const [roleForm, setRoleForm] = useState(emptyRole);
   const [roles, setRoles] = useState([]);
   const [success, setSuccess] = useState("");
@@ -177,6 +179,59 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
     }, "Сотрудник добавлен");
   };
 
+  const addKnowledgeFile = (changeEvent) => {
+    const files = Array.from(changeEvent.target.files || []);
+    setKnowledgeItems((items) => [
+      ...items,
+      ...files.map((file) => ({
+        id: `${file.name}-${file.size}-${Date.now()}`,
+        name: file.name,
+        type: file.type || "file",
+      })),
+    ]);
+    changeEvent.target.value = "";
+  };
+
+  const addKnowledgeLink = (submitEvent) => {
+    submitEvent.preventDefault();
+    const data = new FormData(submitEvent.currentTarget);
+    const value = String(data.get("knowledge_link") || "").trim();
+
+    if (!value) {
+      return;
+    }
+
+    setKnowledgeItems((items) => [
+      ...items,
+      { id: `${value}-${Date.now()}`, name: value, type: "link" },
+    ]);
+    submitEvent.currentTarget.reset();
+  };
+
+  const parseImportPreview = () => {
+    const value = importText.trim();
+
+    if (!value) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.slice(0, 5) : [];
+    } catch {
+      return value
+        .split("\n")
+        .slice(0, 5)
+        .map((line) => {
+          const [name, telegram_id, role] = line.split(",").map((part) => part.trim());
+          return { name, telegram_id, role };
+        })
+        .filter((item) => item.name);
+    }
+  };
+
+  const importPreview = parseImportPreview();
+
   return (
     <div className="space-y-4">
       {formError ? (
@@ -302,6 +357,50 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
                   {role.name}
                 </span>
               ))}
+            </div>
+          </Section>
+
+          <Section title="База знаний Алисы">
+            <div className="space-y-3">
+              <label className="block rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-sm font-medium text-slate-700">
+                Загрузить файл
+                <input
+                  accept=".pdf,.txt,.mp3,.mp4,.jpeg,.jpg,.png,application/pdf,text/plain,audio/mpeg,video/mp4,image/jpeg,image/png"
+                  className="sr-only"
+                  multiple
+                  type="file"
+                  onChange={addKnowledgeFile}
+                />
+              </label>
+              <form className="grid grid-cols-[1fr_auto] gap-2" onSubmit={addKnowledgeLink}>
+                <input
+                  className="h-11 min-w-0 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-teal-600"
+                  name="knowledge_link"
+                  placeholder="Ссылка на регламент или карту"
+                />
+                <button
+                  className="h-11 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white"
+                  type="submit"
+                >
+                  Добавить
+                </button>
+              </form>
+              {knowledgeItems.length > 0 ? (
+                <div className="space-y-2">
+                  {knowledgeItems.map((item) => (
+                    <div
+                      className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                      key={item.id}
+                    >
+                      {item.name}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Загрузка базы знаний пока хранится только в интерфейсе до появления backend API.
+                </p>
+              )}
             </div>
           </Section>
 
@@ -440,6 +539,32 @@ export default function EventSetup({ event, onChanged, onEventCreated, staff }) 
             </form>
             <p className="mt-4 text-xs text-slate-500">
               Сейчас в событии: {staff.length} участников
+            </p>
+          </Section>
+
+          <Section title="Импорт волонтёров">
+            <textarea
+              className="min-h-28 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-teal-600"
+              placeholder={'CSV: Анна,222222222,Регистрация\nили JSON: [{"name":"Анна","telegram_id":"222222222"}]'}
+              value={importText}
+              onChange={(changeEvent) => setImportText(changeEvent.target.value)}
+            />
+            {importPreview.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                {importPreview.map((item, index) => (
+                  <div
+                    className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                    key={`${item.name}-${index}`}
+                  >
+                    {item.name || "Без имени"}
+                    {item.telegram_id ? ` · ${item.telegram_id}` : ""}
+                    {item.role ? ` · ${item.role}` : ""}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <p className="mt-3 text-xs text-slate-500">
+              Массовый импорт пока готов как UI. Для сохранения пачкой нужен отдельный backend endpoint.
             </p>
           </Section>
         </>

@@ -1,29 +1,27 @@
 import { useEffect, useState } from "react";
 import { api } from "./api/client.js";
 import AliceResponse from "./components/AliceResponse.jsx";
+import ChatPanel from "./components/ChatPanel.jsx";
 import CommandBar from "./components/CommandBar.jsx";
 import EventSelector from "./components/EventSelector.jsx";
 import LoginForm from "./components/LoginForm.jsx";
-import MessageFeed from "./components/MessageFeed.jsx";
 import ProfilePanel from "./components/ProfilePanel.jsx";
-import StaffGrid from "./components/StaffGrid.jsx";
 import TicketTable from "./components/TicketTable.jsx";
 import EventSetup from "./pages/EventSetup.jsx";
 import { useAppStore } from "./store/useAppStore.js";
 
 const tabs = [
-  { id: "command", label: "Штаб" },
+  { id: "chat", label: "Чат" },
   { id: "tickets", label: "Тикеты" },
-  { id: "team", label: "Команда" },
-  { id: "profile", label: "Профиль" },
+  { id: "event", label: "Событие" },
+  { id: "settings", label: "Настр." },
 ];
 
 const titles = {
-  command: "Команда Алисе",
-  setup: "Настройка",
-  tickets: "Активные тикеты",
-  team: "Люди и роли",
-  profile: "Профиль",
+  chat: "Чат с Алисой",
+  event: "Создание мероприятия",
+  tickets: "Тикеты",
+  settings: "Настройки",
 };
 
 function navGridClass(count) {
@@ -96,17 +94,17 @@ const DEMO_MESSAGES = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("command");
+  const [activeTab, setActiveTab] = useState("chat");
   const [authError, setAuthError] = useState("");
   const [agentError, setAgentError] = useState("");
   const [agentResponse, setAgentResponse] = useState(null);
+  const [chat, setChat] = useState([]);
   const [events, setEvents] = useState([]);
   const [eventsError, setEventsError] = useState("");
   const [isCommandLoading, setIsCommandLoading] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [isEventsLoading, setIsEventsLoading] = useState(false);
   const [isLoginLoading, setIsLoginLoading] = useState(false);
-  const [lastCommand, setLastCommand] = useState(null);
   const [messages, setMessages] = useState([]);
   const [messagesError, setMessagesError] = useState("");
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
@@ -119,6 +117,9 @@ export default function App() {
   const [ticketsError, setTicketsError] = useState("");
   const [ticketFilters, setTicketFilters] = useState({ status: "" });
   const [isTicketsLoading, setIsTicketsLoading] = useState(false);
+  const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(
+    () => localStorage.getItem("eventops_voice_alerts") !== "off",
+  );
   const eventId = useAppStore((state) => state.eventId);
   const token = useAppStore((state) => state.token);
   const logout = useAppStore((state) => state.logout);
@@ -130,30 +131,57 @@ export default function App() {
   const currentStaff = useAppStore((state) => state.currentStaff);
   const isDemoMode =
     token === DEMO_ADMIN_TOKEN || token === DEMO_VOLUNTEER_TOKEN;
-  const isVolunteerMode = token === DEMO_VOLUNTEER_TOKEN;
-  const isAdminMode = Boolean(currentStaff?.isAdmin) && !isVolunteerMode;
+  const isAdminMode = Boolean(currentStaff?.isAdmin);
+  const isVolunteerMode = Boolean(token) && !isAdminMode;
   const currentStaffProfile = staff.find((person) => person.id === currentStaff?.id);
   const visibleTabs = isVolunteerMode
     ? [
+        { id: "chat", label: "Чат" },
         { id: "tickets", label: "Задачи" },
-        { id: "profile", label: "Профиль" },
+        { id: "settings", label: "Настр." },
       ]
     : isAdminMode
-    ? [tabs[0], { id: "setup", label: "Настр." }, ...tabs.slice(1)]
+    ? tabs
     : tabs;
   const pageTitle =
     isVolunteerMode && activeTab === "tickets" ? "Мои задачи" : titles[activeTab];
 
   useEffect(() => {
     if (isVolunteerMode && !visibleTabs.some((tab) => tab.id === activeTab)) {
-      setActiveTab("tickets");
+      setActiveTab("chat");
       return;
     }
 
-    if (activeTab === "setup" && !isAdminMode) {
-      setActiveTab("command");
+    if (activeTab === "event" && !isAdminMode) {
+      setActiveTab("chat");
     }
   }, [activeTab, isAdminMode, isVolunteerMode, visibleTabs]);
+
+  useEffect(() => {
+    localStorage.setItem("eventops_voice_alerts", voiceAlertsEnabled ? "on" : "off");
+  }, [voiceAlertsEnabled]);
+
+  useEffect(() => {
+    if (!isAdminMode || messages.length === 0) {
+      return;
+    }
+
+    setChat((items) => {
+      const existing = new Set(items.map((item) => item.messageId).filter(Boolean));
+      const incoming = messages
+        .filter((message) => !existing.has(message.id))
+        .slice(0, 10)
+        .map((message) => ({
+          id: `message-${message.id}`,
+          messageId: message.id,
+          from: "admin",
+          text: message.content,
+          createdAt: message.created_at,
+        }));
+
+      return incoming.length > 0 ? [...items, ...incoming] : items;
+    });
+  }, [isAdminMode, messages]);
 
   useEffect(() => {
     if (!token) {
@@ -374,11 +402,107 @@ export default function App() {
       name: demoStaff.name,
     });
     setEventId(DEMO_EVENT.id);
-    setActiveTab(isVolunteer ? "tickets" : "command");
+    setActiveTab("chat");
     setEvents([DEMO_EVENT]);
     setStaff(DEMO_STAFF);
     setTickets(DEMO_TICKETS);
     setMessages(DEMO_MESSAGES);
+    setChat([
+      {
+        id: "hello",
+        from: "alice",
+        text: isVolunteer
+          ? "Я Алиса. Спрашивай по задачам и мероприятию. Если не найду ответ, передам вопрос администратору."
+          : "Я Алиса. Здесь будут вопросы команды и ответы по операционной ситуации.",
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  const appendChat = (entry) => {
+    setChat((items) => [
+      ...items,
+      {
+        id: `${Date.now()}-${items.length}`,
+        createdAt: new Date().toISOString(),
+        ...entry,
+      },
+    ]);
+  };
+
+  const routeUnansweredQuestion = async (text) => {
+    const content = `${currentStaff?.name || "Участник"}: ${text}`;
+    await sendMessage({ content, visibility: "public" });
+  };
+
+  const sendChatText = async (text) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    appendChat({ from: "me", text });
+    setIsCommandLoading(true);
+    setAgentError("");
+
+    if (isDemoMode) {
+      window.setTimeout(() => {
+        const lowered = text.toLowerCase();
+        if (lowered.includes("не знаю") || lowered.includes("вопрос")) {
+          routeUnansweredQuestion(text);
+          appendChat({
+            from: "alice",
+            text: "Не нашла точный ответ в базе знаний. Передала вопрос администратору.",
+          });
+        } else {
+          appendChat({
+            from: "alice",
+            text: "Нашла в базе знаний: действуй по инструкции штаба и держи статус задачи актуальным.",
+          });
+        }
+        setIsCommandLoading(false);
+      }, 300);
+      return;
+    }
+
+    try {
+      const response = await api.sendCommand(selectedEvent.id, { text });
+      appendChat({ from: "alice", text: response.message });
+
+      if (response.action === "question_asked" || response.action === "answered") {
+        await routeUnansweredQuestion(text);
+      }
+    } catch (error) {
+      setAgentError(error.message);
+      appendChat({
+        from: "alice",
+        text: "Не смогла ответить сейчас. Передала вопрос администратору.",
+      });
+      await routeUnansweredQuestion(text);
+    } finally {
+      setIsCommandLoading(false);
+    }
+  };
+
+  const sendChatAudio = async ({ audioBase64 }) => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    appendChat({ from: "me", text: "Голосовое сообщение" });
+    setIsCommandLoading(true);
+    setAgentError("");
+
+    try {
+      const response = isDemoMode
+        ? { message: "Голосовое принято. Если вопрос останется открытым, передам администратору." }
+        : await api.sendCommand(selectedEvent.id, { audio_base64: audioBase64 });
+      appendChat({ from: "alice", text: response.message });
+    } catch (error) {
+      setAgentError(error.message);
+      appendChat({ from: "alice", text: "Не смогла обработать голосовое." });
+    } finally {
+      setIsCommandLoading(false);
+    }
   };
 
   const sendCommand = async (command) => {
@@ -393,15 +517,14 @@ export default function App() {
     setAgentError("");
     setAgentResponse(null);
     setIsCommandLoading(true);
-    setLastCommand(command);
 
     if (isDemoMode) {
       window.setTimeout(() => {
         setAgentResponse({
           action: "ticket_created",
-          message: "Демо: рекомендую отправить Анну на регистрацию.",
+          message: "Демо: создала задачу и предлагаю назначить Анну.",
           suggestion: {
-            reasoning: "Анна свободна и уже находится у входа.",
+            reasoning: "Анна свободна и находится у входа.",
             suggested_staff_ids: [2],
             confidence: "high",
             ticket_id: 1,
@@ -416,6 +539,7 @@ export default function App() {
     try {
       const response = await api.sendCommand(selectedEvent.id, payload);
       setAgentResponse(response);
+      refreshEventData();
     } catch (error) {
       setAgentError(error.message);
     } finally {
@@ -461,7 +585,7 @@ export default function App() {
         staff_ids: staffIds.length > 0 ? staffIds : null,
       });
       setAgentResponse(null);
-      setRefreshKey((key) => key + 1);
+      refreshEventData();
     } catch (error) {
       setAgentError(error.message);
     } finally {
@@ -477,34 +601,6 @@ export default function App() {
     setEvents((items) => [...items, event]);
     setEventId(event.id);
     refreshEventData();
-  };
-
-  const createTicket = async (payload) => {
-    if (!selectedEvent) {
-      return;
-    }
-
-    setTicketsError("");
-
-    if (isDemoMode) {
-      setTickets((items) => [
-        {
-          id: Date.now(),
-          status: "new",
-          assignments: [],
-          ...payload,
-        },
-        ...items,
-      ]);
-      return;
-    }
-
-    try {
-      await api.createTicket(selectedEvent.id, payload);
-      refreshEventData();
-    } catch (error) {
-      setTicketsError(error.message);
-    }
   };
 
   const changeTicket = async (ticketId, status, staffIds = null) => {
@@ -675,55 +771,23 @@ export default function App() {
               {eventsError}
             </p>
           ) : null}
-          {activeTab === "command" ? (
-            <div className="space-y-4">
-              {selectedEvent ? (
-                <CommandBar
-                  disabled={isCommandLoading || isConfirming}
-                  onSubmit={sendCommand}
-                />
-              ) : (
-                <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
-                  <p className="text-sm text-slate-600">
-                    Нет доступного мероприятия для отправки команд.
-                  </p>
-                </section>
-              )}
-              {lastCommand ? (
-                <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-semibold uppercase text-slate-500">
-                    Последняя команда
-                  </p>
-                  <p className="mt-2 text-sm text-slate-900">
-                    {lastCommand.text || "Аудио-команда записана для Алисы"}
-                  </p>
-                  {lastCommand.mimeType ? (
-                    <p className="mt-1 text-xs text-slate-500">
-                      {lastCommand.mimeType}
-                    </p>
-                  ) : null}
-                </section>
-              ) : null}
-              {isCommandLoading ? (
-                <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">
-                  Отправляем команду Алисе...
-                </p>
-              ) : null}
+          {activeTab === "chat" ? (
+            <div className="space-y-3">
               {agentError ? (
                 <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
                   {agentError}
                 </p>
               ) : null}
-              <AliceResponse
-                isConfirming={isConfirming}
-                response={agentResponse}
-                onConfirm={(ticketId, staffIds) =>
-                  confirmSuggestion(ticketId, staffIds, true)
-                }
-                onReject={(ticketId) => confirmSuggestion(ticketId, [], false)}
+              <ChatPanel
+                chat={chat}
+                disabled={!selectedEvent}
+                isLoading={isCommandLoading}
+                mode={isAdminMode ? "admin" : "volunteer"}
+                onSendAudio={sendChatAudio}
+                onSendText={sendChatText}
               />
             </div>
-          ) : activeTab === "setup" ? (
+          ) : activeTab === "event" ? (
             <EventSetup
               event={selectedEvent}
               staff={staff}
@@ -732,8 +796,12 @@ export default function App() {
             />
           ) : activeTab === "tickets" ? (
             <TicketTable
+              agentError={agentError}
+              agentResponse={agentResponse}
               error={ticketsError}
               filters={ticketFilters}
+              isAgentLoading={isCommandLoading}
+              isConfirming={isConfirming}
               isLoading={isTicketsLoading}
               mode={isVolunteerMode ? "volunteer" : "admin"}
               staff={staff}
@@ -746,45 +814,25 @@ export default function App() {
                     )
                   : tickets
               }
-              onCreate={createTicket}
               onFilterChange={(nextFilters) =>
                 setTicketFilters((filters) => ({ ...filters, ...nextFilters }))
               }
+              onAgentConfirm={(ticketId, staffIds) =>
+                confirmSuggestion(ticketId, staffIds, true)
+              }
+              onAgentReject={(ticketId) => confirmSuggestion(ticketId, [], false)}
+              onCommandSubmit={sendCommand}
               onQuestion={askTicketQuestion}
               onStatusChange={changeTicket}
             />
-          ) : activeTab === "team" ? (
-            <div className="space-y-5">
-              <section>
-                <h2 className="mb-3 text-sm font-semibold text-slate-700">
-                  Команда
-                </h2>
-                <StaffGrid
-                  error={staffError}
-                  isLoading={isStaffLoading}
-                  onStatusChange={changeStaffStatus}
-                  staff={staff}
-                />
-              </section>
-              <section>
-                <h2 className="mb-3 text-sm font-semibold text-slate-700">
-                  Сообщения
-                </h2>
-                <MessageFeed
-                  error={messagesError}
-                  isLoading={isMessagesLoading}
-                  messages={messages}
-                  onMarkRead={markMessageRead}
-                  onSend={sendMessage}
-                />
-              </section>
-            </div>
-          ) : activeTab === "profile" ? (
+          ) : activeTab === "settings" ? (
             <ProfilePanel
               context={myContext}
               currentStaff={currentStaffProfile || currentStaff}
               event={selectedEvent}
               onLogout={logout}
+              onVoiceAlertsChange={setVoiceAlertsEnabled}
+              voiceAlertsEnabled={voiceAlertsEnabled}
             />
           ) : (
             <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
