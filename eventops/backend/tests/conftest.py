@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.auth import create_access_token
 from app.database import get_db
