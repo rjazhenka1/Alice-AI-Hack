@@ -303,6 +303,14 @@ class Message(Base):
     to_staff   = relationship("Staff", foreign_keys=[to_staff_id])
     to_role    = relationship("Role",  foreign_keys=[to_role_id])
 
+    @property
+    def sender(self) -> Staff | None:
+        return self.from_staff
+
+    @property
+    def author(self) -> Staff | None:
+        return self.from_staff
+
 
 class AgentSession(Base):
     """

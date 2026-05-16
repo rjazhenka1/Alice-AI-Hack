@@ -87,6 +87,22 @@ class StaffShort(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class RoleShort(BaseModel):
+    id: int
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
+class StaffAuthor(BaseModel):
+    id: int
+    name: str
+    status: StaffStatus
+    role: Optional[RoleShort] = None
+
+    model_config = {"from_attributes": True}
+
 class Staff(StaffCreate):
     id:         int
     event_id:   int
@@ -245,6 +261,7 @@ class Message(BaseModel):
     id:            int
     event_id:      int
     from_staff_id: int
+    author:        Optional[StaffAuthor] = None
     to_staff_id:   Optional[int]
     to_role_id:    Optional[int]
     content:       str
@@ -385,6 +402,9 @@ class AgentCommandResponse(BaseModel):
     """
     action:      str
     message:     str                      # текст ответа Алисы для UI
+    model_response: Optional[str]         = None  # полный текст ответа модели (источник для TTS)
+    author:      Optional[StaffAuthor]    = None
+    author_role: Optional[str]            = None
     audio:       Optional[AudioSynthesis] = None
     suggestion:  Optional[AiSuggestion]  = None
     ticket:      Optional[Ticket]        = None

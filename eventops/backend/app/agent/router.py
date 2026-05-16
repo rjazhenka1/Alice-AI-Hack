@@ -12,7 +12,6 @@ from sqlalchemy.orm import selectinload
 from .alice import AlicePlanner
 from .prompts import build_system_prompt
 from .tools import AgentTools
-from ..rag import search_document_chunks
 from ..models import (
     AgentSession,
     ConfidentialityRule,
@@ -27,11 +26,16 @@ from ..models import (
     Visibility,
     Zone,
 )
-from ..schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
+from ..schemas import (
+    AgentCommandResponse,
+    AiSuggestion,
+    RoleShort,
+    StaffAuthor,
+    Ticket as TicketSchema,
+)
 
 
 MAX_SESSION_MESSAGES = 20
-KB_SNIPPET_MAX_CHARS = 1400
 IMPRECISE_SECOND_PASS_INSTRUCTION = (
     "Если запрос расплывчатый, верни kind=clarification и ровно один конкретный уточняющий вопрос. "
     "Не предлагай действий и не создавай задачу."
@@ -43,60 +47,8 @@ def _trim_context(context: list[dict[str, str]]) -> list[dict[str, str]]:
     return context[-MAX_SESSION_MESSAGES:]
 
 
-def _message_record(*, role: str, text: str, audio_file: str | None = None, source: str | None = None) -> dict[str, str]:
-    record = {"role": role, "text": text}
-    if audio_file:
-        record["audio_file"] = audio_file
-    if source:
-        record["source"] = source
-    return record
-
-
-def _previous_messages(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    for item in _trim_context(context):
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        record: dict[str, Any] = {
-            "role": str(item.get("role") or "unknown"),
-            "text": text,
-        }
-        if item.get("audio_file"):
-            record["audio_file"] = str(item["audio_file"])
-        if item.get("source"):
-            record["source"] = str(item["source"])
-        messages.append(record)
-    return messages
-
-
-def _normalize_client_context(context: list[dict[str, Any]]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-    for item in context[-MAX_SESSION_MESSAGES:]:
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        role = str(item.get("role") or "user").strip() or "user"
-        messages.append(
-            _message_record(
-                role=role,
-                text=text,
-                audio_file=str(item["audio_file"]) if item.get("audio_file") else None,
-                source=str(item["source"]) if item.get("source") else None,
-            )
-        )
-    return messages
-
-
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
-
-
-def _format_kb_chunk_line(chunk: dict[str, Any]) -> str:
-    content = _sanitize_line(str(chunk.get("content") or ""), max_len=KB_SNIPPET_MAX_CHARS)
-    source_title = str(chunk.get("source_title") or "Источник")
-    source_url = str(chunk.get("source_url") or "no-url")
-    return f"- {source_title}: {content} ({source_url})"
 
 
 def _build_imprecise_second_pass_prompt(system_prompt: str) -> str:
@@ -181,13 +133,7 @@ async def _load_kb_context(
     *,
     event_id: int,
     visible_clause: Any,
-    query_text: str | None = None,
 ) -> list[str]:
-    if query_text:
-        chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5)
-        if chunks:
-            return [_format_kb_chunk_line(chunk) for chunk in chunks]
-
     result = await db.execute(
         select(KnowledgeBaseLink)
         .where(
@@ -302,6 +248,95 @@ def _serialize_ticket(ticket: Ticket | None) -> TicketSchema | None:
     return TicketSchema.model_validate(ticket)
 
 
+async def _response_author(db: AsyncSession, staff: Staff) -> tuple[StaffAuthor, str | None]:
+    role_name: str | None = None
+    role_short: RoleShort | None = None
+    if staff.role_id is not None:
+        role = await db.scalar(select(Role).where(Role.id == staff.role_id, Role.event_id == staff.event_id))
+        if role is not None:
+            role_name = role.name
+            role_short = RoleShort.model_validate(role)
+
+    return StaffAuthor(
+        id=staff.id,
+        name=staff.name,
+        status=staff.status,
+        role=role_short,
+    ), role_name
+
+
+async def _resolve_assignees_with_rag(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    assignees: list[str],
+) -> tuple[list[int], list[int]] | None:
+    """Resolve assignee names -> (role_ids, staff_ids).
+
+    RAG API is intentionally left as pseudocode until integration contract is finalized.
+    """
+    role_ids: list[int] = []
+    staff_ids: list[int] = []
+    unresolved: list[str] = []
+
+    for entity in assignees:
+        raw = (entity or "").strip()
+        if not raw:
+            continue
+
+        role_match = await db.scalar(
+            select(Role).where(Role.event_id == event_id, Role.name.ilike(raw))
+        )
+        if role_match is not None:
+            role_ids.append(int(role_match.id))
+            continue
+
+        staff_match = await db.scalar(
+            select(Staff).where(Staff.event_id == event_id, Staff.name.ilike(raw))
+        )
+        if staff_match is not None:
+            staff_ids.append(int(staff_match.id))
+            continue
+
+        unresolved.append(raw)
+
+    if unresolved:
+        # PSEUDOCODE (RAG + second-pass verification):
+        # rag_candidates = [rag.search_people(query=name) for name in unresolved]
+        # selected_ids = llm_verify_entity_ids(input_names=unresolved, candidates=rag_candidates)
+        # if selected_ids is None:
+        #     return None
+        # staff_ids.extend(selected_ids)
+        return None
+
+    return list(dict.fromkeys(role_ids)), list(dict.fromkeys(staff_ids))
+
+
+def _normalize_ticket_status(raw: str | None) -> TicketStatus | None:
+    if not raw:
+        return None
+    try:
+        return TicketStatus(str(raw).strip().lower())
+    except Exception:
+        return None
+
+
+async def _find_staff_for_query(db: AsyncSession, *, event_id: int, query: str) -> Staff | None:
+    normalized = (query or "").strip().lower()
+    if not normalized:
+        return None
+    result = await db.execute(
+        select(Staff)
+        .where(Staff.event_id == event_id)
+        .order_by(Staff.id.asc())
+    )
+    candidates = list(result.scalars().all())
+    matches = [staff for staff in candidates if normalized in str(staff.name).lower()]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _extract_completion_query(text: str) -> str | None:
     cleaned = text.strip().lower()
     if not cleaned.startswith("я сделал"):
@@ -311,11 +346,19 @@ def _extract_completion_query(text: str) -> str | None:
     return tail or ""
 
 
-def _format_kb_answer(planned_message: str, kb_context: list[str]) -> str:
-    message = (planned_message or "").strip()
-    if message:
-        return message
-    return "Нашла в базе знаний:\n" + "\n".join(kb_context[:5])
+def _finalize_response(response: AgentCommandResponse) -> AgentCommandResponse:
+    model_text = (response.model_response or "").strip()
+    ui_text = (response.message or "").strip()
+
+    if not model_text and ui_text:
+        response.model_response = ui_text
+        return response
+    if model_text and not ui_text:
+        response.message = model_text
+        return response
+    if model_text and ui_text and not ui_text.startswith(model_text):
+        response.message = f"{model_text}\n\n{ui_text}"
+    return response
 
 
 async def handle_command(
@@ -324,17 +367,11 @@ async def handle_command(
     event_id: int,
     current_staff: Staff,
     text: str,
-    source: str | None = None,
-    audio_file: str | None = None,
-    client_context: list[dict[str, Any]] | None = None,
 ) -> AgentCommandResponse:
+    response_author, response_author_role = await _response_author(db, current_staff)
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
-    context = (
-        _normalize_client_context(client_context)
-        if client_context is not None
-        else list(session.context or [])
-    )
-    context.append(_message_record(role="user", text=text, audio_file=audio_file, source=source))
+    context = list(session.context or [])
+    context.append({"role": "user", "text": text})
 
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)
     planner = AlicePlanner()
@@ -343,7 +380,7 @@ async def handle_command(
     visible_clause = await _ticket_visibility_clause(db, current_staff)
     kb_visible_clause = await _kb_visibility_clause(db, current_staff)
     admin_staff = await _load_admin_staff_names(db, event_id=event_id)
-    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause, query_text=text)
+    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause)
     confidentiality_rules = await _load_confidentiality_rules(db, event_id=event_id)
     incident_summary = await _load_incident_summary(
         db,
@@ -390,6 +427,9 @@ async def handle_command(
             response = AgentCommandResponse(
                 action="question_asked",
                 message="Не понял, какую именно задачу отметить выполненной. Напиши название задачи.",
+                model_response="Не понял, какую именно задачу отметить выполненной. Напиши название задачи.",
+                author=response_author,
+                author_role=response_author_role,
             )
         else:
             target_ticket.status = TicketStatus.resolved
@@ -402,11 +442,15 @@ async def handle_command(
             response = AgentCommandResponse(
                 action="answered",
                 message=f"Отметил задачу #{target_ticket.id} «{target_ticket.title}» как выполненную.",
+                model_response=f"Отметил задачу #{target_ticket.id} «{target_ticket.title}» как выполненную.",
+                author=response_author,
+                author_role=response_author_role,
                 ticket=_serialize_ticket(target_ticket_for_response),
             )
 
-        context.append({"role": "assistant", "text": response.message})
-        session.context = [] if response.action == "answered" else _trim_context(context)
+        response = _finalize_response(response)
+        context.append({"role": "assistant", "text": response.model_response or response.message})
+        session.context = _trim_context(context)
         await db.commit()
         return response
 
@@ -419,72 +463,204 @@ async def handle_command(
     )
 
     if planned.kind == "clarification":
-        response = AgentCommandResponse(action="question_asked", message=planned.message)
-    elif planned.kind == "answered":
-        response = AgentCommandResponse(action="answered", message=planned.message)
-    elif planned.kind == "informational":
-        if kb_context:
-            response = AgentCommandResponse(action="answered", message=_format_kb_answer(planned.message, kb_context))
-        else:
-            ticket_result = await db.execute(
-                select(Ticket)
-                .where(Ticket.event_id == event_id)
-                .where(visible_clause)
-                .order_by(Ticket.updated_at.desc())
-                .limit(5)
-            )
-            tickets = list(ticket_result.scalars().all())
-            if not tickets:
-                response = AgentCommandResponse(action="answered", message="Сейчас активных тикетов не найдено.")
-            else:
-                lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
-                response = AgentCommandResponse(
-                    action="answered",
-                    message="Текущая сводка:\n" + "\n".join(lines),
-                )
-    else:
-        free_staff = await tools.get_free_staff(limit=2)
-        suggested_ids = [member.id for member in free_staff]
-        suggested_names = [member.name for member in free_staff]
-
-        reasoning = (
-            f"Рекомендую {', '.join(suggested_names)} — они свободны сейчас."
-            if suggested_names
-            else "Свободные исполнители не найдены, требуется ручное назначение."
-        )
-        ai_suggestion = {
-            "reasoning": reasoning,
-            "suggested_staff_ids": suggested_ids,
-            "confidence": "medium" if suggested_ids else "low",
-        }
-        created_ticket = await tools.create_ticket(
-            title=planned.title or "Операционная задача",
-            description=planned.description,
-            previous_messages=_previous_messages(context),
-            ai_suggestion=ai_suggestion,
-        )
-        ticket_for_response = await _load_ticket_for_response(db, event_id=event_id, ticket_id=created_ticket.id)
-
         response = AgentCommandResponse(
-            action="ticket_created",
-            message=(
+            action="question_asked",
+            message=planned.message,
+            model_response=planned.message,
+            author=response_author,
+            author_role=response_author_role,
+        )
+    elif planned.kind == "answered":
+        response = AgentCommandResponse(
+            action="answered",
+            message=planned.message,
+            model_response=planned.message,
+            author=response_author,
+            author_role=response_author_role,
+        )
+    elif planned.kind == "informational":
+        keywords = planned.keywords or []
+        if not keywords:
+            response = AgentCommandResponse(
+                action="question_asked",
+                message="Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия.",
+                model_response="Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия.",
+                author=response_author,
+                author_role=response_author_role,
+            )
+        else:
+            # PSEUDOCODE: docs = rag.search_docs(keywords)
+            docs: list[str] = []
+            if not docs:
+                info_answer = planned.answer or "В базе знаний сейчас не нашёл подходящих материалов."
+            else:
+                # PSEUDOCODE: info_answer = llm_synthesize_info(question=text, docs=docs)
+                info_answer = planned.answer or "Собрал найденные материалы и подготовил ответ."
+            response = AgentCommandResponse(
+                action="answered",
+                message=info_answer,
+                model_response=info_answer,
+                author=response_author,
+                author_role=response_author_role,
+            )
+    else:
+        operational_target = (planned.target or "create").strip().lower()
+
+        if operational_target == "change_status":
+            if planned.ticket_id is None:
+                response = AgentCommandResponse(
+                    action="question_asked",
+                    message="Уточни, пожалуйста, id задачи для смены статуса.",
+                    model_response="Уточни, пожалуйста, id задачи для смены статуса.",
+                    author=response_author,
+                    author_role=response_author_role,
+                )
+            else:
+                ticket = await _load_ticket_for_response(db, event_id=event_id, ticket_id=planned.ticket_id)
+                next_status = _normalize_ticket_status(planned.status)
+                if ticket is None or next_status is None:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Не смог определить задачу или статус. Уточни id и нужный статус.",
+                        model_response="Не смог определить задачу или статус. Уточни id и нужный статус.",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                else:
+                    ticket.status = next_status
+                    await db.flush()
+                    refreshed = await _load_ticket_for_response(db, event_id=event_id, ticket_id=planned.ticket_id)
+                    response = AgentCommandResponse(
+                        action="answered",
+                        message=f"Обновил статус задачи #{planned.ticket_id} на {next_status.value}.",
+                        model_response=planned.message,
+                        author=response_author,
+                        author_role=response_author_role,
+                        ticket=_serialize_ticket(refreshed),
+                    )
+
+        elif operational_target == "respond":
+            explicit_id = planned.ticket_id
+            if explicit_id is not None:
+                ticket = await _load_ticket_for_response(db, event_id=event_id, ticket_id=explicit_id)
+                if ticket is None:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message=f"Не вижу задачу #{explicit_id} в доступной области. Уточни номер.",
+                        model_response=f"Не вижу задачу #{explicit_id} в доступной области. Уточни номер.",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                else:
+                    answer = f"Задача #{ticket.id}: {ticket.title}. Текущий статус: {ticket.status.value}."
+                    response = AgentCommandResponse(
+                        action="answered",
+                        message=answer,
+                        model_response=planned.message,
+                        author=response_author,
+                        author_role=response_author_role,
+                        ticket=_serialize_ticket(ticket),
+                    )
+            else:
+                staff = await _find_staff_for_query(db, event_id=event_id, query=text)
+                if staff is None:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Уточни, пожалуйста, сотрудника или номер задачи, чтобы дать точный ответ.",
+                        model_response="Уточни, пожалуйста, сотрудника или номер задачи, чтобы дать точный ответ.",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                else:
+                    assigned = await db.execute(
+                        select(Ticket)
+                        .join(TicketAssignment, TicketAssignment.ticket_id == Ticket.id)
+                        .where(Ticket.event_id == event_id)
+                        .where(TicketAssignment.staff_id == staff.id)
+                        .where(visible_clause)
+                        .order_by(Ticket.updated_at.desc())
+                        .limit(5)
+                    )
+                    tickets = list(assigned.scalars().all())
+                    if not tickets:
+                        answer = f"У {staff.name} сейчас нет видимых задач."
+                    else:
+                        lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
+                        answer = f"Задачи у {staff.name}:\n" + "\n".join(lines)
+                    response = AgentCommandResponse(
+                        action="answered",
+                        message=answer,
+                        model_response=planned.message,
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+
+        else:
+            reasoning = "Автоподбор исполнителей отключён. Назначь людей вручную при подтверждении."
+            target_payload: dict[str, Any] = {"all": False, "role_ids": [], "staff_ids": []}
+
+            if isinstance(planned.assignees, str) and planned.assignees.strip().lower() == "all":
+                target_payload = {"all": True, "role_ids": [], "staff_ids": []}
+                reasoning = "Задача помечена на всех участников."
+            elif isinstance(planned.assignees, list) and planned.assignees:
+                resolved = await _resolve_assignees_with_rag(db, event_id=event_id, assignees=planned.assignees)
+                if resolved is None:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Не смог однозначно сопоставить цели по именам. Уточни, пожалуйста, исполнителей.",
+                        model_response=planned.message,
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                    response = _finalize_response(response)
+                    context.append({"role": "assistant", "text": response.model_response or response.message})
+                    session.context = _trim_context(context)
+                    await db.commit()
+                    return response
+
+                role_ids, staff_ids = resolved
+                target_payload = {"all": False, "role_ids": role_ids, "staff_ids": staff_ids}
+                reasoning = "Цели сопоставлены по именам и подготовлены для назначения."
+
+            ai_suggestion = {
+                "reasoning": reasoning,
+                "suggested_staff_ids": target_payload["staff_ids"],
+                "confidence": "low",
+            }
+            created_ticket = await tools.create_ticket(
+                title=planned.title or "Операционная задача",
+                description=planned.description,
+                target=target_payload,
+                assignee_role_id=(target_payload["role_ids"][0] if target_payload["role_ids"] else None),
+                ai_suggestion=ai_suggestion,
+            )
+            ticket_for_response = await _load_ticket_for_response(db, event_id=event_id, ticket_id=created_ticket.id)
+
+            operational_text = (
                 f"Создал задачу #{created_ticket.id}: {created_ticket.title}. "
                 f"{reasoning} После подтверждения отправлю уведомления исполнителям."
-            ),
-            suggestion=AiSuggestion(
-                reasoning=reasoning,
-                suggested_staff_ids=suggested_ids,
-                confidence="medium" if suggested_ids else "low",
-                ticket_id=created_ticket.id,
-            ),
-            ticket=_serialize_ticket(ticket_for_response),
-        )
+            )
+            model_text = (planned.message or "").strip()
+            full_model_response = f"{model_text}\n\n{operational_text}" if model_text else operational_text
 
-    context.append({"role": "assistant", "text": response.message})
-    if response.action in {"ticket_created", "answered"}:
-        session.context = []
-    else:
-        session.context = _trim_context(context)
+            response = AgentCommandResponse(
+                action="ticket_created",
+                message=operational_text,
+                model_response=full_model_response,
+                author=response_author,
+                author_role=response_author_role,
+                suggestion=AiSuggestion(
+                    reasoning=reasoning,
+                    suggested_staff_ids=target_payload["staff_ids"],
+                    confidence="low",
+                    ticket_id=created_ticket.id,
+                ),
+                ticket=_serialize_ticket(ticket_for_response),
+            )
+
+    response = _finalize_response(response)
+    context.append({"role": "assistant", "text": response.model_response or response.message})
+    session.context = _trim_context(context)
     await db.commit()
     return response
 
