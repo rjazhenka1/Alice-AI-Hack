@@ -3,7 +3,7 @@ EventOps AI — SQLAlchemy models
 """
 
 import enum
-from datetime import datetime
+from datetime import UTC, datetime
 from sqlalchemy import (
     Boolean, Column, DateTime, Enum, ForeignKey,
     Integer, JSON, String, Text
@@ -13,6 +13,11 @@ from sqlalchemy.orm import DeclarativeBase, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+def utcnow() -> datetime:
+    """Naive UTC for SQLAlchemy DateTime columns, Python 3.12-safe."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
@@ -63,7 +68,7 @@ class Event(Base):
     description = Column(Text)
     start_time  = Column(DateTime)
     end_time    = Column(DateTime)
-    created_at  = Column(DateTime, default=datetime.utcnow)
+    created_at  = Column(DateTime, default=utcnow)
 
     zones   = relationship("Zone",   back_populates="event", cascade="all, delete-orphan")
     roles   = relationship("Role",   back_populates="event", cascade="all, delete-orphan")
@@ -127,7 +132,7 @@ class Staff(Base):
     zone_id           = Column(Integer, ForeignKey("zones.id"), nullable=True)
     status            = Column(Enum(StaffStatus), default=StaffStatus.free)
     is_admin          = Column(Boolean, default=False)
-    created_at        = Column(DateTime, default=datetime.utcnow)
+    created_at        = Column(DateTime, default=utcnow)
 
     event       = relationship("Event", back_populates="staff")
     role        = relationship("Role",  back_populates="staff")
@@ -164,8 +169,8 @@ class Ticket(Base):
 
     ai_suggestion    = Column(JSON, nullable=True)
 
-    created_at       = Column(DateTime, default=datetime.utcnow)
-    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at       = Column(DateTime, default=utcnow)
+    updated_at       = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     event       = relationship("Event",  back_populates="tickets")
     created_by  = relationship("Staff",  foreign_keys=[created_by_id])
@@ -184,7 +189,7 @@ class TicketAssignment(Base):
     id          = Column(Integer, primary_key=True)
     ticket_id   = Column(Integer, ForeignKey("tickets.id"), nullable=False)
     staff_id    = Column(Integer, ForeignKey("staff.id"), nullable=False)
-    assigned_at = Column(DateTime, default=datetime.utcnow)
+    assigned_at = Column(DateTime, default=utcnow)
     confirmed   = Column(Boolean, default=False)
 
     ticket = relationship("Ticket", back_populates="assignments")
@@ -210,7 +215,7 @@ class Message(Base):
     content       = Column(Text, nullable=False)
     is_read       = Column(Boolean, default=False)
     visibility    = Column(Enum(Visibility), default=Visibility.public)
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    created_at    = Column(DateTime, default=utcnow)
 
     from_staff = relationship("Staff", foreign_keys=[from_staff_id])
     to_staff   = relationship("Staff", foreign_keys=[to_staff_id])
@@ -230,7 +235,7 @@ class AgentSession(Base):
     event_id   = Column(Integer, ForeignKey("events.id"), nullable=False)
     staff_id   = Column(Integer, ForeignKey("staff.id"), nullable=False)
     context    = Column(JSON, default=list)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     staff = relationship("Staff", foreign_keys=[staff_id])
