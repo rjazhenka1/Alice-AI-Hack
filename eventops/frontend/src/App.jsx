@@ -1,8 +1,70 @@
+import { useState } from "react";
+import { useAppStore } from "./store/useAppStore.js";
+
+const tabs = [
+  { id: "command", label: "Штаб" },
+  { id: "tickets", label: "Тикеты" },
+  { id: "team", label: "Команда" },
+  { id: "profile", label: "Профиль" },
+];
+
+const titles = {
+  command: "Команда Алисе",
+  tickets: "Активные тикеты",
+  team: "Люди и роли",
+  profile: "Профиль",
+};
+
 export default function App() {
+  const [activeTab, setActiveTab] = useState("command");
+  const eventId = useAppStore((state) => state.eventId);
+  const setEventId = useAppStore((state) => state.setEventId);
+
   return (
-    <main className="min-h-screen bg-slate-950 p-6 text-white">
-      <h1 className="text-2xl font-semibold">EventOps AI</h1>
-      <p className="mt-2 text-slate-300">Frontend initialized.</p>
-    </main>
+    <div className="min-h-screen bg-slate-100 text-slate-950">
+      <div className="mx-auto flex min-h-screen max-w-md flex-col bg-white">
+        <header className="border-b border-slate-200 px-4 py-3">
+          <p className="text-xs font-semibold uppercase text-teal-700">
+            EventOps AI
+          </p>
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <h1 className="text-lg font-semibold">{titles[activeTab]}</h1>
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              ID
+              <input
+                className="h-9 w-16 rounded-md border border-slate-300 px-2 text-sm"
+                min="1"
+                type="number"
+                value={eventId}
+                onChange={(event) => setEventId(event.target.value)}
+              />
+            </label>
+          </div>
+        </header>
+
+        <main className="flex-1 px-4 py-4">
+          <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4">
+            <p className="text-sm text-slate-600">
+              Экран "{titles[activeTab]}" будет заполнен следующим шагом.
+            </p>
+          </section>
+        </main>
+
+        <nav className="grid grid-cols-4 border-t border-slate-200 bg-white">
+          {tabs.map((tab) => (
+            <button
+              className={`px-2 py-3 text-xs font-medium ${
+                activeTab === tab.id ? "text-teal-700" : "text-slate-500"
+              }`}
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+    </div>
   );
 }
