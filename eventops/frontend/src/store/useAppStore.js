@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-const savedEventId = localStorage.getItem("eventops_event_id") || "1";
+const savedEventId = localStorage.getItem("eventops_event_id") || "";
 const savedToken = localStorage.getItem("eventops_token") || "";
 
 export const useAppStore = create((set) => ({
@@ -19,7 +19,8 @@ export const useAppStore = create((set) => ({
     set({ token });
   },
   logout: () => {
+    localStorage.removeItem("eventops_event_id");
     localStorage.removeItem("eventops_token");
-    set({ currentStaff: null, token: "" });
+    set({ currentStaff: null, eventId: "", token: "" });
   },
 }));
