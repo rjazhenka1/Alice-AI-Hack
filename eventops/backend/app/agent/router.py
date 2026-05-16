@@ -227,7 +227,10 @@ async def _kb_visibility_clause(db: AsyncSession, staff: Staff) -> Any:
 async def _load_ticket_for_response(db: AsyncSession, *, event_id: int, ticket_id: int) -> Ticket | None:
     result = await db.execute(
         select(Ticket)
-        .options(selectinload(Ticket.assignments).selectinload(TicketAssignment.staff))
+        .options(
+            selectinload(Ticket.created_by),
+            selectinload(Ticket.assignments).selectinload(TicketAssignment.staff),
+        )
         .where(Ticket.event_id == event_id, Ticket.id == ticket_id)
     )
     return result.scalar_one_or_none()
@@ -417,7 +420,10 @@ async def confirm_ticket(
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)
     ticket_result = await db.execute(
         select(Ticket)
-        .options(selectinload(Ticket.assignments).selectinload(TicketAssignment.staff))
+        .options(
+            selectinload(Ticket.created_by),
+            selectinload(Ticket.assignments).selectinload(TicketAssignment.staff),
+        )
         .where(Ticket.event_id == event_id, Ticket.id == ticket_id)
     )
     ticket = ticket_result.scalar_one_or_none()
@@ -443,9 +449,15 @@ async def confirm_ticket(
             )
             for staff in staff_result.scalars().all():
                 if staff.telegram_id:
+                    from ..notifier import format_task_notification
+
                     await tools.send_notification(
                         telegram_id=staff.telegram_id,
-                        message=f"Новая задача: {ticket.title}",
+                        message=format_task_notification(
+                            ticket_id=ticket.id,
+                            title=ticket.title,
+                            description=ticket.description,
+                        ),
                     )
     else:
         ticket.status = TicketStatus.waiting

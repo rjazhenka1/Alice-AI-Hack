@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import time
+import base64
+import binascii
 from dataclasses import dataclass
 
 import httpx
@@ -23,19 +25,89 @@ class PlannedCommand:
     description: str | None = None
 
 
-def audio_not_supported_message() -> str:
-    """ABI stub for variant B until SpeechKit implementation is added."""
-    return "Поддержка голосовых сообщений не реализована"
-
-
 class SpeechKitClient:
-    """SpeechKit integration stub (STT/TTS contracts only, no implementation yet)."""
+    """Yandex SpeechKit STT/TTS client used by agent audio endpoints."""
+
+    def __init__(self) -> None:
+        self.api_key = os.getenv("ALICE_API_KEY")
+        self.folder_id = os.getenv("ALICE_FOLDER_ID")
+        self.timeout_seconds = 30
+        self.stt_url = os.getenv("SPEECHKIT_STT_URL", "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize")
+        self.tts_url = os.getenv("SPEECHKIT_TTS_URL", "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize")
+
+    def _headers(self, *, content_type: str | None = None) -> dict[str, str]:
+        if not self.api_key:
+            raise RuntimeError("SpeechKit is not configured: set ALICE_API_KEY")
+        headers = {"Authorization": f"Api-Key {self.api_key}"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
+
+    def _folder_id(self) -> str:
+        if not self.folder_id:
+            raise RuntimeError("SpeechKit is not configured: set ALICE_FOLDER_ID")
+        return self.folder_id
+
+    @staticmethod
+    def _decode_audio(audio_base64: str) -> bytes:
+        try:
+            return base64.b64decode(audio_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Invalid audio_base64") from exc
 
     async def transcribe_audio_base64(self, *, audio_base64: str, language: str = "ru-RU") -> str:
-        raise NotImplementedError("SpeechKit STT is not implemented yet")
+        audio = self._decode_audio(audio_base64)
+        start = time.perf_counter()
+        params = {
+            "folderId": self._folder_id(),
+            "lang": language,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    self.stt_url,
+                    params=params,
+                    headers=self._headers(content_type="application/octet-stream"),
+                    content=audio,
+                )
+                response.raise_for_status()
+                data = response.json()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("speechkit_stt_ok latency_ms=%.1f language=%s", elapsed_ms, language)
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning("speechkit_stt_failed latency_ms=%.1f language=%s error=%s", elapsed_ms, language, exc)
+            raise RuntimeError("SpeechKit STT request failed") from exc
+
+        chunks = data.get("chunks")
+        if isinstance(chunks, list) and chunks:
+            text = " ".join(str(chunk.get("alternatives", [{}])[0].get("text", "")).strip() for chunk in chunks)
+        else:
+            text = str(data.get("result", "")).strip()
+        if not text:
+            raise RuntimeError("SpeechKit STT returned empty transcription")
+        return text
 
     async def synthesize_text_base64(self, *, text: str, voice: str = "alena") -> str:
-        raise NotImplementedError("SpeechKit TTS is not implemented yet")
+        start = time.perf_counter()
+        data = {
+            "folderId": self._folder_id(),
+            "text": text,
+            "lang": "ru-RU",
+            "voice": voice,
+            "format": "oggopus",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(self.tts_url, headers=self._headers(), data=data)
+                response.raise_for_status()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("speechkit_tts_ok latency_ms=%.1f voice=%s", elapsed_ms, voice)
+            return base64.b64encode(response.content).decode("ascii")
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning("speechkit_tts_failed latency_ms=%.1f voice=%s error=%s", elapsed_ms, voice, exc)
+            raise RuntimeError("SpeechKit TTS request failed") from exc
 
 
 class AlicePlanner:

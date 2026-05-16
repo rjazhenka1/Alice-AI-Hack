@@ -35,6 +35,13 @@ _worker_task: asyncio.Task[None] | None = None
 _stop_event: asyncio.Event | None = None
 
 
+def format_task_notification(*, ticket_id: int, title: str, description: str | None = None) -> str:
+    message = f"Новая задача #{ticket_id}: {title}"
+    if description:
+        message += f"\n{description}"
+    return message
+
+
 async def enqueue_notification(payload: dict[str, Any]) -> None:
     if not payload.get("message"):
         raise ValueError("Notification payload must include message")

@@ -153,6 +153,25 @@ class TicketAssignmentOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class TicketReplyCreate(BaseModel):
+    content:    str = Field(..., min_length=1, examples=["Взял задачу, буду через 5 минут"])
+    visibility: Visibility = Visibility.public
+
+
+class TicketReply(BaseModel):
+    id:            int
+    event_id:      int
+    ticket_id:     int
+    from_staff_id: int
+    sender:        Optional[StaffShort] = None
+    content:       str
+    visibility:    Visibility
+    created_at:    datetime
+
+    model_config = {"from_attributes": True}
+
+
 class Ticket(BaseModel):
     id:               int
     event_id:         int
@@ -163,6 +182,8 @@ class Ticket(BaseModel):
     status:           TicketStatus
     visibility:       Visibility
     created_by_id:    Optional[int]
+    sender:           Optional[StaffShort] = None
+    created_by:       Optional[StaffShort] = None
     assignee_role_id: Optional[int]
     target:           dict[str, Any] = {"all": False, "role_ids": [], "staff_ids": []}
     ai_suggestion:    Optional[dict[str, Any]]

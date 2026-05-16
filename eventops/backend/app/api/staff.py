@@ -140,7 +140,10 @@ async def get_staff_context(
         (
             await db.scalars(
                 select(Ticket)
-                .options(selectinload(Ticket.assignments).selectinload(TicketAssignment.staff))
+                .options(
+                    selectinload(Ticket.created_by),
+                    selectinload(Ticket.assignments).selectinload(TicketAssignment.staff),
+                )
                 .where(Ticket.event_id == event_id)
                 .where(visible_tickets)
                 .where(Ticket.assignments.any(staff_id=staff_id))
@@ -154,7 +157,10 @@ async def get_staff_context(
             (
                 await db.scalars(
                     select(Ticket)
-                    .options(selectinload(Ticket.assignments).selectinload(TicketAssignment.staff))
+                    .options(
+                        selectinload(Ticket.created_by),
+                        selectinload(Ticket.assignments).selectinload(TicketAssignment.staff),
+                    )
                     .where(Ticket.event_id == event_id, Ticket.assignee_role_id == target.role_id)
                     .where(visible_tickets)
                     .order_by(Ticket.updated_at.desc())

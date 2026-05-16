@@ -166,9 +166,15 @@ POST   /events/{id}/zones               body: ZoneCreate → Zone
 GET    /events/{id}/tickets             → Ticket[]   (фильтруется по visibility текущего юзера)
 POST   /events/{id}/tickets             body: TicketCreate → Ticket
 PATCH  /events/{id}/tickets/{tid}       body: TicketUpdate → Ticket
+GET    /events/{id}/tickets/{tid}/replies → TicketReply[]
+POST   /events/{id}/tickets/{tid}/replies body: TicketReplyCreate → TicketReply
 POST   /events/{id}/tickets/{tid}/assign  body: AssignRequest → Ticket
 PATCH  /events/{id}/tickets/{tid}/assignments/{aid}  body: ConfirmAssignmentRequest → TicketAssignment
 ```
+
+`Ticket` в ответах содержит отправителя/создателя: `sender` и `created_by` как `StaffShort`.
+`TicketReply` — ответ/комментарий к тикету от участника; доступ к списку ответов возможен только если
+пользователь видит сам тикет. Confidential-ответы видят только admin и роли с `can_see_confidential=True`.
 
 ### Messages
 ```

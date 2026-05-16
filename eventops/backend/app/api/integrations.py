@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import re
@@ -9,6 +10,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..agent.alice import SpeechKitClient
+from ..agent.router import handle_command
 from ..database import get_db
 from ..models import Message, Staff
 from ..notifier import enqueue_notification
@@ -136,6 +139,21 @@ def _voice_message_content(voice: dict[str, Any], file_path: Path) -> str:
     )
 
 
+async def _transcribe_voice_file(file_path: Path) -> str:
+    audio_base64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    return await SpeechKitClient().transcribe_audio_base64(audio_base64=audio_base64)
+
+
+async def _answer_with_alice(db: AsyncSession, staff: Staff, text: str) -> str:
+    response = await handle_command(
+        db=db,
+        event_id=staff.event_id,
+        current_staff=staff,
+        text=text,
+    )
+    return response.message
+
+
 @router.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
@@ -168,20 +186,34 @@ async def telegram_webhook(
     if voice:
         try:
             voice_path = await _save_telegram_voice(voice, staff, telegram_message)
+            transcribed_text = await _transcribe_voice_file(voice_path)
         except Exception as exc:
-            logger.exception("Failed to save Telegram voice: telegram_id=%s", telegram_id)
+            logger.exception("Failed to process Telegram voice: telegram_id=%s", telegram_id)
             await enqueue_notification(
                 {
                     "telegram_id": str(chat.get("id") or telegram_id),
-                    "message": "Не смогла сохранить голосовое сообщение. Попробуйте отправить текстом.",
+                    "message": "Не смогла разобрать голосовое сообщение. Попробуйте отправить текстом.",
                 }
             )
-            raise HTTPException(status_code=502, detail="Failed to download Telegram voice") from exc
-        await _store_incoming_message(db, staff, _voice_message_content(voice, voice_path))
-        reply = "Приняла голосовое сообщение и передала в штаб."
+            raise HTTPException(status_code=502, detail="Failed to process Telegram voice") from exc
+
+        await _store_incoming_message(
+            db,
+            staff,
+            f"{_voice_message_content(voice, voice_path)} transcript={transcribed_text}",
+        )
+        try:
+            reply = await _answer_with_alice(db, staff, transcribed_text)
+        except Exception:
+            logger.exception("Failed to answer Telegram voice via Alice: telegram_id=%s", telegram_id)
+            reply = f"Распознала голосовое: {transcribed_text}\nНо не смогла получить ответ Алисы."
     else:
         await _store_incoming_message(db, staff, str(text))
-        reply = "Приняла сообщение и передала в штаб."
+        try:
+            reply = await _answer_with_alice(db, staff, str(text))
+        except Exception:
+            logger.exception("Failed to answer Telegram text via Alice: telegram_id=%s", telegram_id)
+            reply = "Приняла сообщение, но сейчас не смогла получить ответ Алисы."
 
     await enqueue_notification(
         {
