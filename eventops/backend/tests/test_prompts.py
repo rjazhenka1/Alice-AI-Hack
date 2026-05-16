@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.agent.prompts import (
+    build_knowledge_capture_prompt,
     build_rag_entity_disambiguation_prompt,
     build_rag_informational_synthesis_prompt,
     build_system_prompt,
@@ -101,3 +102,15 @@ def test_build_rag_informational_synthesis_prompt_contains_contract_and_few_shot
     assert 'user_question: "Где туалет рядом с 331?"' in prompt
     assert "Источник: admin://map/floor-3" in prompt
     assert '{"kind":"informational","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3)."' in prompt
+
+
+def test_build_knowledge_capture_prompt_contains_schema_and_examples() -> None:
+    prompt = build_knowledge_capture_prompt()
+
+    assert "Тебе дают фрагмент разговора организаторов внутри тикета" in prompt
+    assert '"useful": true | false' in prompt
+    assert '"title": "короткое название знания или null"' in prompt
+    assert '"content": "самодостаточный текст для базы знаний или null"' in prompt
+    assert '"tags": ["короткие", "теги"]' in prompt
+    assert '"reason": "почему сохранить или почему не сохранять"' in prompt
+    assert "Если useful=false, title и content должны быть null." in prompt
