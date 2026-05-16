@@ -1,0 +1,1250 @@
+openapi: 3.1.0
+
+info:
+  title: EventOps AI
+  description: |
+    AI-штаб для координации команды на мероприятии.
+
+    **Аутентификация:** все эндпоинты кроме `/auth/login` требуют
+    заголовок `Authorization: Bearer <token>`.
+
+    **Visibility-фильтрация:** бэкенд автоматически фильтрует тикеты
+    и сообщения по правам текущего сотрудника. Фронт ничего
+    дополнительно не фильтрует.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:8000
+    description: Local dev
+
+tags:
+  - name: auth
+    description: Аутентификация
+  - name: events
+    description: Мероприятия
+  - name: staff
+    description: Сотрудники и волонтёры
+  - name: roles
+    description: Роли команды
+  - name: zones
+    description: Зоны площадки
+  - name: tickets
+    description: Тикеты и задачи
+  - name: messages
+    description: Сообщения и вопросы
+  - name: agent
+    description: AI-агент (Алиса)
+
+# ─── Security ────────────────────────────────────────────────────────────────
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # ─── Enums ────────────────────────────────────────────────────────────────
+
+  schemas:
+
+    TicketType:
+      type: string
+      enum: [planned, incident, tech, question]
+      description: |
+        - `planned`  — плановая задача
+        - `incident` — инцидент
+        - `tech`     — техническая проблема
+        - `question` — вопрос
+
+    TicketPriority:
+      type: string
+      enum: [low, medium, high, critical]
+
+    TicketStatus:
+      type: string
+      enum: [new, in_progress, waiting, resolved, closed]
+      description: |
+        - `waiting` — ожидает подтверждения координатора
+
+    Visibility:
+      type: string
+      enum: [public, role_only, confidential]
+      description: |
+        - `public`       — видят все участники мероприятия
+        - `role_only`    — видит только своя роль + admin
+        - `confidential` — только admin + роли с can_see_confidential
+
+    StaffStatus:
+      type: string
+      enum: [free, busy, on_task, offline]
+
+    AgentAction:
+      type: string
+      enum: [ticket_created, question_asked, task_assigned, answered]
+      description: |
+        - `ticket_created` — создан тикет, ждём подтверждения
+        - `question_asked` — Алиса задала уточняющий вопрос
+        - `task_assigned`  — задача назначена без уточнений
+        - `answered`       — Алиса ответила на информационный запрос
+
+    # ─── Zone ───────────────────────────────────────────────────────────────
+
+    ZoneCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: Холл 1
+        description:
+          type: string
+          nullable: true
+          example: Главный зал, вмещает 300 человек
+
+    Zone:
+      allOf:
+        - $ref: '#/components/schemas/ZoneCreate'
+        - type: object
+          required: [id, event_id]
+          properties:
+            id:
+              type: integer
+            event_id:
+              type: integer
+
+    # ─── Role ───────────────────────────────────────────────────────────────
+
+    RoleCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: Техкомитет
+        description:
+          type: string
+          nullable: true
+        ai_prompt:
+          type: string
+          nullable: true
+          description: |
+            Описание роли для Алисы. Используется в системном промпте,
+            чтобы агент мог маршрутизировать задачи без явного указания роли.
+          example: >
+            Отвечает за работу оборудования, интернет, проектор, звук,
+            технические неисправности в любой зоне площадки.
+        color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+          default: '#6366f1'
+          example: '#ef4444'
+        can_see_confidential:
+          type: boolean
+          default: false
+          description: Если true — роль видит confidential-тикеты (жюри, оргкомитет)
+
+    Role:
+      allOf:
+        - $ref: '#/components/schemas/RoleCreate'
+        - type: object
+          required: [id, event_id]
+          properties:
+            id:
+              type: integer
+            event_id:
+              type: integer
+
+    # ─── Staff ──────────────────────────────────────────────────────────────
+
+    StaffCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: Анна Иванова
+        telegram_id:
+          type: string
+          nullable: true
+          example: '123456789'
+        telegram_username:
+          type: string
+          nullable: true
+          example: anna_ivanova
+        role_id:
+          type: integer
+          nullable: true
+        zone_id:
+          type: integer
+          nullable: true
+        is_admin:
+          type: boolean
+          default: false
+
+    StaffUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        role_id:
+          type: integer
+          nullable: true
+        zone_id:
+          type: integer
+          nullable: true
+        status:
+          $ref: '#/components/schemas/StaffStatus'
+        is_admin:
+          type: boolean
+
+    StaffShort:
+      type: object
+      required: [id, name, status]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/StaffStatus'
+
+    Staff:
+      allOf:
+        - $ref: '#/components/schemas/StaffCreate'
+        - type: object
+          required: [id, event_id, status, created_at]
+          properties:
+            id:
+              type: integer
+            event_id:
+              type: integer
+            status:
+              $ref: '#/components/schemas/StaffStatus'
+            role:
+              $ref: '#/components/schemas/Role'
+              nullable: true
+            zone:
+              $ref: '#/components/schemas/Zone'
+              nullable: true
+            created_at:
+              type: string
+              format: date-time
+
+    FreeStaffResponse:
+      type: object
+      required: [staff, total_free, total_staff]
+      properties:
+        staff:
+          type: array
+          items:
+            $ref: '#/components/schemas/Staff'
+        total_free:
+          type: integer
+        total_staff:
+          type: integer
+
+    # ─── Event ──────────────────────────────────────────────────────────────
+
+    EventCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: ICPC 2025 Semifinal
+        description:
+          type: string
+          nullable: true
+        start_time:
+          type: string
+          format: date-time
+          nullable: true
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+
+    Event:
+      allOf:
+        - $ref: '#/components/schemas/EventCreate'
+        - type: object
+          required: [id, created_at]
+          properties:
+            id:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+
+    EventSummary:
+      type: object
+      description: Полная сводка мероприятия — передаётся Алисе как контекст
+      required: [event, zones, roles, staff, open_tickets]
+      properties:
+        event:
+          $ref: '#/components/schemas/Event'
+        zones:
+          type: array
+          items:
+            $ref: '#/components/schemas/Zone'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        staff:
+          type: array
+          items:
+            $ref: '#/components/schemas/Staff'
+        open_tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+
+    # ─── Ticket ─────────────────────────────────────────────────────────────
+
+    TicketCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          example: На регистрации очередь
+        description:
+          type: string
+          nullable: true
+        type:
+          $ref: '#/components/schemas/TicketType'
+          default: incident
+        priority:
+          $ref: '#/components/schemas/TicketPriority'
+          default: medium
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+          default: public
+        assignee_role_id:
+          type: integer
+          nullable: true
+
+    TicketUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        type:
+          $ref: '#/components/schemas/TicketType'
+        priority:
+          $ref: '#/components/schemas/TicketPriority'
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        assignee_role_id:
+          type: integer
+          nullable: true
+
+    TicketAssignmentOut:
+      type: object
+      required: [id, staff, assigned_at, confirmed]
+      properties:
+        id:
+          type: integer
+        staff:
+          $ref: '#/components/schemas/StaffShort'
+        assigned_at:
+          type: string
+          format: date-time
+        confirmed:
+          type: boolean
+
+    Ticket:
+      type: object
+      required: [id, event_id, title, type, priority, status, visibility, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        event_id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        type:
+          $ref: '#/components/schemas/TicketType'
+        priority:
+          $ref: '#/components/schemas/TicketPriority'
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        created_by_id:
+          type: integer
+          nullable: true
+        assignee_role_id:
+          type: integer
+          nullable: true
+        ai_suggestion:
+          $ref: '#/components/schemas/AiSuggestion'
+          nullable: true
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TicketAssignmentOut'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AssignRequest:
+      type: object
+      required: [staff_ids]
+      properties:
+        staff_ids:
+          type: array
+          items:
+            type: integer
+          minItems: 1
+          example: [3, 7]
+
+    ConfirmAssignmentRequest:
+      type: object
+      required: [confirmed]
+      properties:
+        confirmed:
+          type: boolean
+
+    # ─── Message ────────────────────────────────────────────────────────────
+
+    MessageCreate:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          example: Нужна помощь у входа
+        to_staff_id:
+          type: integer
+          nullable: true
+          description: Личное сообщение конкретному сотруднику
+        to_role_id:
+          type: integer
+          nullable: true
+          description: Сообщение всей роли
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+          default: public
+
+    Message:
+      type: object
+      required: [id, event_id, from_staff_id, content, is_read, visibility, created_at]
+      properties:
+        id:
+          type: integer
+        event_id:
+          type: integer
+        from_staff_id:
+          type: integer
+        to_staff_id:
+          type: integer
+          nullable: true
+        to_role_id:
+          type: integer
+          nullable: true
+        content:
+          type: string
+        is_read:
+          type: boolean
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        created_at:
+          type: string
+          format: date-time
+
+    MyContext:
+      type: object
+      description: |
+        Контекст конкретного сотрудника — отвечает на вопросы
+        "что мне делать", "что меня спрашивали", "что делает мой отдел".
+        Фильтруется по visibility автоматически.
+      required: [my_tickets, my_messages, role_tickets]
+      properties:
+        my_tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+        my_messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        role_tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+
+    # ─── Agent ──────────────────────────────────────────────────────────────
+
+    AgentCommandRequest:
+      type: object
+      description: |
+        Главный эндпоинт агента. Передаётся либо `text`, либо `audio_base64`.
+        Если передан audio — бэкенд прогоняет через STT Алисы сам.
+      properties:
+        text:
+          type: string
+          nullable: true
+          example: На регистрации очередь, нужны два человека
+        audio_base64:
+          type: string
+          nullable: true
+          description: Base64-encoded audio (wav или ogg)
+
+    AiSuggestion:
+      type: object
+      required: [reasoning, suggested_staff_ids, confidence]
+      properties:
+        reasoning:
+          type: string
+          example: Анна и Максим свободны и находятся ближе всего к регистрации
+        suggested_staff_ids:
+          type: array
+          items:
+            type: integer
+          example: [3, 7]
+        confidence:
+          type: string
+          enum: [high, medium, low]
+        ticket_id:
+          type: integer
+          nullable: true
+          description: id тикета если он уже создан
+
+    AgentCommandResponse:
+      type: object
+      required: [action, message]
+      properties:
+        action:
+          $ref: '#/components/schemas/AgentAction'
+        message:
+          type: string
+          description: Текст ответа Алисы для отображения в UI
+          example: Рекомендую перевести Анну и Максима на регистрацию на 20 минут.
+        suggestion:
+          $ref: '#/components/schemas/AiSuggestion'
+          nullable: true
+        ticket:
+          $ref: '#/components/schemas/Ticket'
+          nullable: true
+
+    AgentConfirmRequest:
+      type: object
+      required: [ticket_id, accept]
+      properties:
+        ticket_id:
+          type: integer
+        accept:
+          type: boolean
+          description: true — принять предложение Алисы, false — отклонить
+        staff_ids:
+          type: array
+          items:
+            type: integer
+          nullable: true
+          description: Если передать — назначить этих людей вместо предложенных Алисой
+
+    # ─── Auth ────────────────────────────────────────────────────────────────
+
+    LoginRequest:
+      type: object
+      required: [telegram_id]
+      properties:
+        telegram_id:
+          type: string
+          example: '123456789'
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, staff_id, is_admin]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          default: bearer
+        staff_id:
+          type: integer
+        is_admin:
+          type: boolean
+
+    # ─── Errors ──────────────────────────────────────────────────────────────
+
+    HTTPError:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          example: Not found
+
+# ─── Paths ───────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Auth ──────────────────────────────────────────────────────────────────
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Войти по telegram_id
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '404':
+          description: Сотрудник не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+
+  # ── Events ────────────────────────────────────────────────────────────────
+
+  /events:
+    get:
+      tags: [events]
+      summary: Список мероприятий
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+    post:
+      tags: [events]
+      summary: Создать мероприятие
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+
+  /events/{event_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [events]
+      summary: Мероприятие по id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '404':
+          description: Не найдено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+
+  /events/{event_id}/summary:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [events]
+      summary: Полная сводка мероприятия
+      description: |
+        Возвращает всё — роли, зоны, людей, открытые тикеты.
+        Используется агентом для формирования контекста Алисы.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventSummary'
+
+  # ── Zones ─────────────────────────────────────────────────────────────────
+
+  /events/{event_id}/zones:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [zones]
+      summary: Список зон
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Zone'
+    post:
+      tags: [zones]
+      summary: Создать зону
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ZoneCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+
+  # ── Roles ─────────────────────────────────────────────────────────────────
+
+  /events/{event_id}/roles:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [roles]
+      summary: Список ролей
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+    post:
+      tags: [roles]
+      summary: Создать роль
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+
+  /events/{event_id}/roles/{role_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    delete:
+      tags: [roles]
+      summary: Удалить роль
+      responses:
+        '204':
+          description: Удалено
+
+  # ── Staff ─────────────────────────────────────────────────────────────────
+
+  /events/{event_id}/staff:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [staff]
+      summary: Список сотрудников
+      parameters:
+        - name: role_id
+          in: query
+          schema:
+            type: integer
+        - name: zone_id
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/StaffStatus'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Staff'
+    post:
+      tags: [staff]
+      summary: Добавить сотрудника
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StaffCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Staff'
+
+  /events/{event_id}/staff/free:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [staff]
+      summary: Свободные сотрудники
+      description: Используется Алисой через tool get_free_staff и фронтом
+      parameters:
+        - name: role_id
+          in: query
+          schema:
+            type: integer
+        - name: zone_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FreeStaffResponse'
+
+  /events/{event_id}/staff/{staff_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: staff_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [staff]
+      summary: Сотрудник по id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Staff'
+    patch:
+      tags: [staff]
+      summary: Обновить сотрудника
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StaffUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Staff'
+    delete:
+      tags: [staff]
+      summary: Удалить сотрудника
+      responses:
+        '204':
+          description: Удалено
+
+  /events/{event_id}/staff/{staff_id}/context:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: staff_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [staff]
+      summary: Контекст сотрудника
+      description: |
+        Отвечает на запросы волонтёра вида:
+        "что мне делать", "что меня спрашивали", "что делает мой холл".
+        Фильтрует по visibility автоматически.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyContext'
+
+  # ── Tickets ───────────────────────────────────────────────────────────────
+
+  /events/{event_id}/tickets:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [tickets]
+      summary: Список тикетов
+      description: Фильтруется по visibility текущего пользователя
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketStatus'
+        - name: priority
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketPriority'
+        - name: role_id
+          in: query
+          schema:
+            type: integer
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketType'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Ticket'
+    post:
+      tags: [tickets]
+      summary: Создать тикет
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+
+  /events/{event_id}/tickets/{ticket_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: ticket_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [tickets]
+      summary: Тикет по id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '403':
+          description: Нет доступа (visibility)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPError'
+    patch:
+      tags: [tickets]
+      summary: Обновить тикет
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+
+  /events/{event_id}/tickets/{ticket_id}/assign:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: ticket_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [tickets]
+      summary: Назначить людей на тикет
+      description: Ручное назначение. После подтверждения Алисы используй /agent/confirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+
+  /events/{event_id}/tickets/{ticket_id}/assignments/{assignment_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: ticket_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: assignment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    patch:
+      tags: [tickets]
+      summary: Подтвердить или отклонить назначение
+      description: Волонтёр подтверждает что принял задачу
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmAssignmentRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketAssignmentOut'
+
+  # ── Messages ──────────────────────────────────────────────────────────────
+
+  /events/{event_id}/messages:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [messages]
+      summary: Список сообщений
+      description: Фильтруется по visibility и адресату
+      parameters:
+        - name: unread_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+    post:
+      tags: [messages]
+      summary: Отправить сообщение
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageCreate'
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /events/{event_id}/messages/{message_id}/read:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: message_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    patch:
+      tags: [messages]
+      summary: Отметить как прочитанное
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  # ── Agent ─────────────────────────────────────────────────────────────────
+
+  /events/{event_id}/agent/command:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [agent]
+      summary: Отправить команду агенту
+      description: |
+        Главный эндпоинт. Принимает текст или голос (base64).
+
+        **Примеры команд:**
+        - "На регистрации очередь, нужны люди"
+        - "Создай задачу для техкомитета — сломался проектор"
+        - "Что сейчас происходит в Live-зоне?"
+        - "Задай вопрос Максиму — он готов?"
+
+        Алиса определяет намерение, вызывает нужные tools и возвращает
+        предложение с объяснением.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCommandRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCommandResponse'
+
+  /events/{event_id}/agent/confirm:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [agent]
+      summary: Подтвердить или отклонить предложение Алисы
+      description: |
+        Если `accept=true` — назначает предложенных людей и шлёт им уведомление.
+        Если `accept=false` — тикет остаётся без назначения.
+        Если передать `staff_ids` — назначает этих вместо предложенных.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentConfirmRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
