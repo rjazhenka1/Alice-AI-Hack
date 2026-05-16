@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import Select, and_, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import (
+from models import (
     Staff,
     StaffStatus,
     Ticket,

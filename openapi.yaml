@@ -565,10 +565,54 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: Base64-encoded audio. В текущем PoC голосовой путь возвращает безопасный fallback-ответ.
+          description: Base64-encoded audio. В SpeechKit-ветке используется как вход для STT.
       oneOf:
         - required: [text]
         - required: [audio_base64]
+
+    TranscriptionRequest:
+      type: object
+      required: [audio_base64]
+      properties:
+        audio_base64:
+          type: string
+          minLength: 1
+          description: Base64-encoded audio payload
+        language:
+          type: string
+          default: ru-RU
+          description: Язык распознавания
+
+    TranscriptionResponse:
+      type: object
+      required: [status]
+      properties:
+        text:
+          type: string
+          nullable: true
+        status:
+          type: string
+          description: ok | not_implemented | error
+        detail:
+          type: string
+          nullable: true
+
+    AudioSynthesis:
+      type: object
+      required: [status, format]
+      properties:
+        audio_base64:
+          type: string
+          nullable: true
+        format:
+          type: string
+          default: oggopus
+        status:
+          type: string
+          description: ok | not_implemented | error
+        detail:
+          type: string
+          nullable: true
 
     AiSuggestion:
       type: object
@@ -605,6 +649,9 @@ components:
           type: string
           description: Текст ответа Алисы для отображения в UI
           example: Рекомендую перевести Анну и Максима на регистрацию на 20 минут.
+        audio:
+          $ref: '#/components/schemas/AudioSynthesis'
+          nullable: true
         suggestion:
           $ref: '#/components/schemas/AiSuggestion'
           nullable: true
@@ -1314,3 +1361,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ticket'
+
+  /events/{event_id}/agent/transcribe:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [agent]
+      summary: Сделать транскрипцию аудио (debug/stub)
+      description: |
+        Отладочный эндпоинт для STT.
+        На текущем этапе реализован как контрактный stub без вызова SpeechKit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranscriptionRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'

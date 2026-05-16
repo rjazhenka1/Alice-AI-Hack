@@ -7,10 +7,18 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..agent.alice import audio_not_supported_message
+from ..agent.alice import SpeechKitClient, audio_not_supported_message
 from ..agent.router import confirm_ticket, handle_command
 from ..models import Staff
-from ..schemas import AgentCommandRequest, AgentCommandResponse, AgentConfirmRequest, Ticket
+from ..schemas import (
+    AgentCommandRequest,
+    AgentCommandResponse,
+    AgentConfirmRequest,
+    AudioSynthesis,
+    Ticket,
+    TranscriptionRequest,
+    TranscriptionResponse,
+)
 
 try:
     from ..auth import get_current_staff
@@ -37,13 +45,17 @@ async def agent_command(
     db: AsyncSession = Depends(get_db),
     current_staff: Staff = Depends(get_current_staff),
 ) -> AgentCommandResponse:
+    speechkit = SpeechKitClient()
     text = (payload.text or "").strip()
     has_text = bool(text)
     has_audio = bool((payload.audio_base64 or "").strip())
 
     if has_audio and not has_text:
-        # ABI for Variant B placeholder, user-facing scenario 3 fallback.
-        return AgentCommandResponse(action="answered", message=audio_not_supported_message())
+        return AgentCommandResponse(
+            action="answered",
+            message=audio_not_supported_message(),
+            audio=AudioSynthesis(status="not_implemented", detail="SpeechKit TTS stub is not implemented yet"),
+        )
 
     if not has_text and not has_audio:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Either text or audio_base64 is required")
@@ -52,11 +64,32 @@ async def agent_command(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Provide only one command source: text or audio_base64")
 
     try:
-        return await handle_command(db=db, event_id=event_id, current_staff=current_staff, text=text)
+        response = await handle_command(db=db, event_id=event_id, current_staff=current_staff, text=text)
+        if response.audio is None:
+            response.audio = AudioSynthesis(status="not_implemented", detail="SpeechKit TTS stub is not implemented yet")
+        # Keep reference so stub method exists in merge target; implementation comes later.
+        _ = speechkit
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/transcribe", response_model=TranscriptionResponse)
+async def agent_transcribe(
+    event_id: int,
+    payload: TranscriptionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_staff: Staff = Depends(get_current_staff),
+) -> TranscriptionResponse:
+    # Event/staff dependencies are intentionally kept for future auth and access checks.
+    _ = (event_id, db, current_staff, payload)
+    return TranscriptionResponse(
+        text=None,
+        status="not_implemented",
+        detail="SpeechKit STT stub is not implemented yet",
+    )
 
 
 @router.post("/confirm", response_model=Ticket)
