@@ -226,6 +226,9 @@ POST   /events/{id}/agent/command       body: AgentCommandRequest → AgentComma
 POST   /events/{id}/agent/confirm       body: AgentConfirmRequest → Ticket
 ```
 
+`AgentCommandRequest.context` — опциональная предыстория до 20 сообщений. Если фронт передаёт
+`context`, бэкенд использует его вместо сохранённой session-памяти текущего пользователя для этого запроса.
+
 ---
 
 ## Видимость данных (Visibility)

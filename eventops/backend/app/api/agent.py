@@ -97,6 +97,7 @@ async def agent_command(
             text=text,
             source="agent_audio" if audio_file else "agent_text",
             audio_file=audio_file,
+            client_context=[item.model_dump(exclude_none=True) for item in payload.context or []] if payload.context is not None else None,
         )
         try:
             response.audio = AudioSynthesis(

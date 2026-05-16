@@ -194,6 +194,40 @@ async def test_command_keeps_previous_messages_until_ticket_created(db_session: 
 
 
 @pytest.mark.asyncio
+async def test_command_accepts_client_context_up_to_twenty_messages(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(
+            text="На входе толпа, срочно помогите",
+            context=[
+                {"role": "user", "text": "Нужны люди", "source": "agent_text"},
+                {"role": "assistant", "text": "Сколько человек нужно?"},
+            ],
+        ),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert [item["text"] for item in response.ticket.previous_messages] == [
+        "Нужны люди",
+        "Сколько человек нужно?",
+        "На входе толпа, срочно помогите",
+    ]
+
+
+def test_agent_command_context_is_limited_to_twenty_messages():
+    with pytest.raises(ValueError):
+        AgentCommandRequest(
+            text="На входе толпа",
+            context=[{"role": "user", "text": f"msg {index}"} for index in range(21)],
+        )
+
+
+@pytest.mark.asyncio
 async def test_confirm_assigns_staff_and_updates_status(db_session: AsyncSession):
     event_id, coordinator_id, worker_id = await _seed_event_with_staff(db_session)
     coordinator = await _get_staff(db_session, coordinator_id)
