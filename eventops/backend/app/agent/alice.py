@@ -119,7 +119,7 @@ class AlicePlanner:
     async def _plan_remote(self, *, text: str, system_prompt: str | None) -> PlannedCommand | None:
         request_prompt = (
             "Верни только JSON без markdown в формате "
-            '{"kind":"operational|clarification|informational|answered",'
+            '{"kind":"operational|clarification|informational|imprecise|answered",'
             '"message":"...","title":"...","description":"..."}. '
             "Если запрос неясный — kind=clarification или kind=answered."
         )
@@ -188,7 +188,7 @@ class AlicePlanner:
         message = str(parsed.get("message", "Не удалось разобрать ответ модели."))
         title = parsed.get("title")
         description = parsed.get("description")
-        if kind not in {"operational", "clarification", "informational", "answered"}:
+        if kind not in {"operational", "clarification", "informational", "imprecise", "answered"}:
             kind = "answered"
         return PlannedCommand(
             kind=kind,

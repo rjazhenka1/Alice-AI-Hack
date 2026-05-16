@@ -84,12 +84,49 @@ components:
 
     AgentAction:
       type: string
-      enum: [ticket_created, question_asked, task_assigned, answered]
+      enum: [ticket_created, question_asked, answered]
       description: |
         - `ticket_created` — создан тикет, ждём подтверждения
         - `question_asked` — Алиса задала уточняющий вопрос
-        - `task_assigned`  — задача назначена без уточнений
-        - `answered`       — Алиса ответила на информационный запрос
+        - `answered`       — Алиса дала текстовый ответ (инфо-ответ, fallback, подтверждение закрытия)
+
+    TicketTarget:
+      type: object
+      description: Нормализованный target задачи в ответе
+      required: [all, role_ids, staff_ids]
+      properties:
+        all:
+          type: boolean
+          default: false
+        role_ids:
+          type: array
+          items:
+            type: integer
+          default: []
+        staff_ids:
+          type: array
+          items:
+            type: integer
+          default: []
+
+    TicketTargetPatch:
+      type: object
+      nullable: true
+      description: |
+        Входной target для create/update.
+        Бэкенд нормализует значение в формат `TicketTarget`.
+      properties:
+        all:
+          type: boolean
+        role_ids:
+          type: array
+          items:
+            type: integer
+        staff_ids:
+          type: array
+          items:
+            type: integer
+      additionalProperties: true
 
     # ─── Zone ───────────────────────────────────────────────────────────────
 
@@ -330,6 +367,11 @@ components:
         assignee_role_id:
           type: integer
           nullable: true
+        target:
+          $ref: '#/components/schemas/TicketTargetPatch'
+          description: |
+            Целевая аудитория задачи (все / роли / конкретные сотрудники).
+            При отсутствии бэкенд формирует target автоматически.
 
     TicketUpdate:
       type: object
@@ -350,6 +392,9 @@ components:
         assignee_role_id:
           type: integer
           nullable: true
+        target:
+          $ref: '#/components/schemas/TicketTargetPatch'
+          description: Обновление целевой аудитории задачи
 
     TicketAssignmentOut:
       type: object
@@ -392,9 +437,20 @@ components:
         assignee_role_id:
           type: integer
           nullable: true
+        target:
+          $ref: '#/components/schemas/TicketTarget'
+          description: Нормализованный target задачи
+          default:
+            all: false
+            role_ids: []
+            staff_ids: []
         ai_suggestion:
-          $ref: '#/components/schemas/AiSuggestion'
+          type: object
           nullable: true
+          description: |
+            Внутренний JSON с рекомендацией Алисы.
+            Может содержать `reasoning`, `suggested_staff_ids`, `confidence`, `target` и др.
+          additionalProperties: true
         assignments:
           type: array
           items:
@@ -497,17 +553,22 @@ components:
     AgentCommandRequest:
       type: object
       description: |
-        Главный эндпоинт агента. Передаётся либо `text`, либо `audio_base64`.
-        Если передан audio — бэкенд прогоняет через STT Алисы сам.
+        Главный эндпоинт агента. Передаётся ровно одно из полей: `text` или `audio_base64`.
+        Пустые значения считаются невалидными.
       properties:
         text:
           type: string
           nullable: true
+          minLength: 1
           example: На регистрации очередь, нужны два человека
         audio_base64:
           type: string
           nullable: true
-          description: Base64-encoded audio (wav или ogg)
+          minLength: 1
+          description: Base64-encoded audio. В текущем PoC голосовой путь возвращает безопасный fallback-ответ.
+      oneOf:
+        - required: [text]
+        - required: [audio_base64]
 
     AiSuggestion:
       type: object
@@ -523,7 +584,7 @@ components:
           example: [3, 7]
         confidence:
           type: string
-          enum: [high, medium, low]
+          description: Уровень уверенности (обычно `high` | `medium` | `low`)
         ticket_id:
           type: integer
           nullable: true
@@ -532,6 +593,11 @@ components:
     AgentCommandResponse:
       type: object
       required: [action, message]
+      description: |
+        Нормализованный ответ роутера агента.
+        - `ticket_created`: обычно приходит вместе с `suggestion` и `ticket`
+        - `question_asked`: уточняющий вопрос без side effects
+        - `answered`: информационный/сервисный ответ
       properties:
         action:
           $ref: '#/components/schemas/AgentAction'

@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.agent import agent_command, agent_confirm
-from app.agent.alice import AlicePlanner, PlannedCommand
-from app.models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Zone
-from app.schemas import AgentCommandRequest, AgentConfirmRequest
+from api.agent import agent_command, agent_confirm
+from agent.alice import AlicePlanner, PlannedCommand
+from models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Zone
+from schemas import AgentCommandRequest, AgentConfirmRequest
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_alice_env():
     import os
 
@@ -20,7 +21,16 @@ async def setup_alice_env():
     os.environ["ALICE_MODEL"] = "yandexgpt"
 
     async def fake_remote(self, *, text: str, system_prompt: str | None):
+        AlicePlanner._last_system_prompt = system_prompt  # type: ignore[attr-defined]
         lowered = text.lower()
+        if "расплывчато без уточнения" in lowered:
+            if system_prompt and "Не предлагай действий и не создавай задачу" in system_prompt:
+                return PlannedCommand(kind="answered", message="Недостаточно данных")
+            return PlannedCommand(kind="imprecise", message="Формулировка расплывчата")
+        if "расплывчато" in lowered:
+            if system_prompt and "Не предлагай действий и не создавай задачу" in system_prompt:
+                return PlannedCommand(kind="clarification", message="Уточни точную задачу и дедлайн")
+            return PlannedCommand(kind="imprecise", message="Формулировка расплывчата")
         if "что происходит" in lowered or "что сейчас" in lowered:
             return PlannedCommand(kind="informational", message="Собираю сводку")
         if "ну ты поняла" in lowered:
@@ -99,6 +109,10 @@ async def test_command_creates_ticket_on_operational_text(db_session: AsyncSessi
     assert response.action == "ticket_created"
     assert response.ticket is not None
     assert response.suggestion is not None
+    assert response.ticket.target["all"] is False
+    assert isinstance(response.ticket.target["staff_ids"], list)
+    assert len(response.ticket.target["staff_ids"]) >= 1
+    assert response.ticket.target["role_ids"] == []
 
 
 @pytest.mark.asyncio

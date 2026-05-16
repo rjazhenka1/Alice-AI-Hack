@@ -11,7 +11,7 @@ EventOps AI — Pydantic schemas (OpenAPI contract)
 from datetime import datetime
 from typing import Any, Optional
 from pydantic import BaseModel, Field
-from .models import (
+from models import (
     StaffStatus, TicketPriority, TicketStatus,
     TicketType, Visibility
 )
@@ -133,6 +133,7 @@ class TicketCreate(BaseModel):
     priority:         TicketPriority   = TicketPriority.medium
     visibility:       Visibility       = Visibility.public
     assignee_role_id: Optional[int]   = None
+    target:           Optional[dict[str, Any]] = None
 
 class TicketUpdate(BaseModel):
     title:            Optional[str]            = None
@@ -142,6 +143,7 @@ class TicketUpdate(BaseModel):
     status:           Optional[TicketStatus]    = None
     visibility:       Optional[Visibility]      = None
     assignee_role_id: Optional[int]            = None
+    target:           Optional[dict[str, Any]] = None
 
 class TicketAssignmentOut(BaseModel):
     id:          int
@@ -162,6 +164,7 @@ class Ticket(BaseModel):
     visibility:       Visibility
     created_by_id:    Optional[int]
     assignee_role_id: Optional[int]
+    target:           dict[str, Any] = {"all": False, "role_ids": [], "staff_ids": []}
     ai_suggestion:    Optional[dict[str, Any]]
     assignments:      list[TicketAssignmentOut] = []
     created_at:       datetime
@@ -223,8 +226,7 @@ class AgentCommandResponse(BaseModel):
     Ответ агента на команду координатора.
     action = "ticket_created"   — создан тикет, ждём подтверждения
     action = "question_asked"   — Алиса задала уточняющий вопрос
-    action = "task_assigned"    — задача назначена без уточнений
-    action = "answered"         — Алиса ответила на информационный запрос
+    action = "answered"         — Алиса дала текстовый ответ (инфо/фолбэк/подтверждение)
     """
     action:      str
     message:     str                      # текст ответа Алисы для UI
