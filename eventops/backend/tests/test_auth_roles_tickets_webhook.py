@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import jwt
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,9 @@ from app.auth import ALGORITHM
 from app.models import Message
 
 from conftest import auth_headers, seed_event, seed_role, seed_staff
+
+
+pytestmark = pytest.mark.asyncio
 
 
 async def test_auth_login_returns_valid_jwt(client: AsyncClient, db_session: AsyncSession):

@@ -6,13 +6,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.agent import agent_command, agent_confirm
-from app.agent.alice import AlicePlanner, PlannedCommand
-from app.models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Zone
-from app.schemas import AgentCommandRequest, AgentConfirmRequest
+from api.agent import agent_command, agent_confirm
+from agent.alice import AlicePlanner, PlannedCommand
+from models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Zone
+from schemas import AgentCommandRequest, AgentConfirmRequest
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_alice_env():
     import os
 

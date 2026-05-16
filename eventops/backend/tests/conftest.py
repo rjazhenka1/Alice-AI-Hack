@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -19,7 +20,7 @@ from app.main import app
 from app.models import Base, Event, Role, Staff, StaffStatus
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSession, None]:
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
@@ -45,7 +46,7 @@ async def db_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGe
     await engine.dispose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:
