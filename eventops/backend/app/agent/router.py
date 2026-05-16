@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from .alice import AlicePlanner
 from .prompts import build_system_prompt
 from .tools import AgentTools
+from ..rag import search_document_chunks
 from ..models import (
     AgentSession,
     ConfidentialityRule,
@@ -30,6 +31,7 @@ from ..schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
 
 
 MAX_SESSION_MESSAGES = 20
+KB_SNIPPET_MAX_CHARS = 1400
 IMPRECISE_SECOND_PASS_INSTRUCTION = (
     "Если запрос расплывчатый, верни kind=clarification и ровно один конкретный уточняющий вопрос. "
     "Не предлагай действий и не создавай задачу."
@@ -88,6 +90,13 @@ def _normalize_client_context(context: list[dict[str, Any]]) -> list[dict[str, s
 
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
+
+
+def _format_kb_chunk_line(chunk: dict[str, Any]) -> str:
+    content = _sanitize_line(str(chunk.get("content") or ""), max_len=KB_SNIPPET_MAX_CHARS)
+    source_title = str(chunk.get("source_title") or "Источник")
+    source_url = str(chunk.get("source_url") or "no-url")
+    return f"- {source_title}: {content} ({source_url})"
 
 
 def _build_imprecise_second_pass_prompt(system_prompt: str) -> str:
@@ -172,7 +181,13 @@ async def _load_kb_context(
     *,
     event_id: int,
     visible_clause: Any,
+    query_text: str | None = None,
 ) -> list[str]:
+    if query_text:
+        chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5)
+        if chunks:
+            return [_format_kb_chunk_line(chunk) for chunk in chunks]
+
     result = await db.execute(
         select(KnowledgeBaseLink)
         .where(
@@ -296,6 +311,13 @@ def _extract_completion_query(text: str) -> str | None:
     return tail or ""
 
 
+def _format_kb_answer(planned_message: str, kb_context: list[str]) -> str:
+    message = (planned_message or "").strip()
+    if message:
+        return message
+    return "Нашла в базе знаний:\n" + "\n".join(kb_context[:5])
+
+
 async def handle_command(
     *,
     db: AsyncSession,
@@ -321,7 +343,7 @@ async def handle_command(
     visible_clause = await _ticket_visibility_clause(db, current_staff)
     kb_visible_clause = await _kb_visibility_clause(db, current_staff)
     admin_staff = await _load_admin_staff_names(db, event_id=event_id)
-    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause)
+    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause, query_text=text)
     confidentiality_rules = await _load_confidentiality_rules(db, event_id=event_id)
     incident_summary = await _load_incident_summary(
         db,
@@ -401,22 +423,25 @@ async def handle_command(
     elif planned.kind == "answered":
         response = AgentCommandResponse(action="answered", message=planned.message)
     elif planned.kind == "informational":
-        ticket_result = await db.execute(
-            select(Ticket)
-            .where(Ticket.event_id == event_id)
-            .where(visible_clause)
-            .order_by(Ticket.updated_at.desc())
-            .limit(5)
-        )
-        tickets = list(ticket_result.scalars().all())
-        if not tickets:
-            response = AgentCommandResponse(action="answered", message="Сейчас активных тикетов не найдено.")
+        if kb_context:
+            response = AgentCommandResponse(action="answered", message=_format_kb_answer(planned.message, kb_context))
         else:
-            lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
-            response = AgentCommandResponse(
-                action="answered",
-                message="Текущая сводка:\n" + "\n".join(lines),
+            ticket_result = await db.execute(
+                select(Ticket)
+                .where(Ticket.event_id == event_id)
+                .where(visible_clause)
+                .order_by(Ticket.updated_at.desc())
+                .limit(5)
             )
+            tickets = list(ticket_result.scalars().all())
+            if not tickets:
+                response = AgentCommandResponse(action="answered", message="Сейчас активных тикетов не найдено.")
+            else:
+                lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
+                response = AgentCommandResponse(
+                    action="answered",
+                    message="Текущая сводка:\n" + "\n".join(lines),
+                )
     else:
         free_staff = await tools.get_free_staff(limit=2)
         suggested_ids = [member.id for member in free_staff]

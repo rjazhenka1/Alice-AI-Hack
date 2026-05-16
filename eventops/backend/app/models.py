@@ -78,6 +78,7 @@ class Event(Base):
     knowledge_base_links = relationship("KnowledgeBaseLink", back_populates="event", cascade="all, delete-orphan")
     confidentiality_rules = relationship("ConfidentialityRule", back_populates="event", cascade="all, delete-orphan")
     ticket_replies = relationship("TicketReply", back_populates="event", cascade="all, delete-orphan")
+    document_chunks = relationship("DocumentChunk", back_populates="event", cascade="all, delete-orphan")
 
 
 class Zone(Base):
@@ -338,6 +339,26 @@ class KnowledgeBaseLink(Base):
     updated_at  = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     event = relationship("Event", back_populates="knowledge_base_links")
+
+
+class DocumentChunk(Base):
+    """Текстовый фрагмент документа для RAG. Vector-колонка добавляется pgvector-миграцией."""
+    __tablename__ = "document_chunks"
+
+    id                     = Column(Integer, primary_key=True)
+    event_id               = Column(Integer, ForeignKey("events.id"), nullable=False)
+    knowledge_base_link_id = Column(Integer, ForeignKey("knowledge_base_links.id"), nullable=True)
+    ticket_id              = Column(Integer, ForeignKey("tickets.id"), nullable=True)
+    content                = Column(Text, nullable=False)
+    source_title           = Column(String(255), nullable=False)
+    source_url             = Column(String(2048), nullable=True)
+    chunk_index            = Column(Integer, nullable=False, default=0)
+    chunk_metadata         = Column(JSON, nullable=True)
+    created_at             = Column(DateTime, default=utcnow)
+
+    event = relationship("Event", back_populates="document_chunks")
+    knowledge_base_link = relationship("KnowledgeBaseLink")
+    ticket = relationship("Ticket")
 
 
 class ConfidentialityRule(Base):

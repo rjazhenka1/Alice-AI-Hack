@@ -11,6 +11,7 @@ from .. import schemas
 from ..auth import get_current_staff
 from ..database import get_db
 from ..models import ConfidentialityRule, KnowledgeBaseLink, Staff, Visibility
+from ..rag import index_document_chunks, search_document_chunks
 from .common import can_see_confidential, ensure_event_access
 
 router = APIRouter(prefix="/events/{event_id}", tags=["knowledge"])
@@ -31,11 +32,11 @@ def _parse_tags(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-async def _save_upload(file: UploadFile, destination: Path) -> int:
+async def _save_upload(file: UploadFile, destination: Path) -> bytes:
     content = await file.read()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(content)
-    return len(content)
+    return content
 
 
 async def _kb_visibility_filter(db: AsyncSession, staff: Staff) -> Any:
@@ -88,6 +89,18 @@ async def create_knowledge_link(
     return link
 
 
+@router.get("/knowledge/search", response_model=list[schemas.DocumentChunkSearchResult])
+async def search_knowledge(
+    event_id: int,
+    q: str,
+    limit: int = 5,
+    db: AsyncSession = Depends(get_db),
+    current_staff: Staff = Depends(get_current_staff),
+) -> list[dict[str, Any]]:
+    await ensure_event_access(event_id, current_staff)
+    return await search_document_chunks(db, event_id=event_id, query=q, limit=max(1, min(limit, 20)))
+
+
 @router.post("/knowledge/upload", response_model=schemas.KnowledgeBaseLink, status_code=status.HTTP_201_CREATED)
 async def upload_knowledge_document(
     event_id: int,
@@ -106,7 +119,7 @@ async def upload_knowledge_document(
     document_id = uuid4().hex
     filename = _safe_filename(file.filename or "document")
     destination = _document_storage_dir() / str(event_id) / "knowledge" / f"{document_id}_{filename}"
-    await _save_upload(file, destination)
+    content = await _save_upload(file, destination)
     link = KnowledgeBaseLink(
         event_id=event_id,
         title=title or filename,
@@ -117,6 +130,16 @@ async def upload_knowledge_document(
         visibility=visibility,
     )
     db.add(link)
+    await db.flush()
+    await index_document_chunks(
+        db,
+        event_id=event_id,
+        content=content,
+        source_title=link.title,
+        source_url=link.url,
+        knowledge_base_link_id=link.id,
+        metadata={"filename": filename, "content_type": file.content_type},
+    )
     await db.commit()
     await db.refresh(link)
     return link

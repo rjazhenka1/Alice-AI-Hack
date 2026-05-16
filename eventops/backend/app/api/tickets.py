@@ -1,4 +1,5 @@
 import re
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -10,13 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .. import schemas
+from ..agent.alice import AlicePlanner
+from ..agent.prompts import build_knowledge_capture_prompt
 from ..auth import get_current_staff
 from ..database import get_db
-from ..models import Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketPriority, TicketReply, TicketStatus, Visibility
+from ..models import KnowledgeBaseLink, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketPriority, TicketReply, TicketStatus, Visibility
 from ..notifier import enqueue_notification, format_task_notification
+from ..rag import index_document_chunks
 from .common import can_see_confidential, ensure_event_access, ticket_visibility_filter
 
 router = APIRouter(prefix="/events/{event_id}/tickets", tags=["tickets"])
+logger = logging.getLogger(__name__)
 
 
 def _document_storage_dir() -> Path:
@@ -28,11 +33,11 @@ def _safe_filename(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]", "_", name) or "document"
 
 
-async def _save_upload(file: UploadFile, destination: Path) -> int:
+async def _save_upload(file: UploadFile, destination: Path) -> bytes:
     content = await file.read()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(content)
-    return len(content)
+    return content
 
 
 def _priority_order():
@@ -96,6 +101,74 @@ async def _reply_visibility_filter(db: AsyncSession, current_staff: Staff) -> Co
         (TicketReply.visibility == Visibility.public)
         | (TicketReply.from_staff_id == current_staff.id)
         | ((TicketReply.visibility == Visibility.confidential) & (true() if confidential_allowed else false()))
+    )
+
+
+async def _maybe_capture_organizer_reply_as_knowledge(
+    db: AsyncSession,
+    *,
+    ticket: Ticket,
+    reply: TicketReply,
+    current_staff: Staff,
+) -> None:
+    if not current_staff.is_admin:
+        return
+    if ticket.created_by_id is None or ticket.created_by_id == current_staff.id:
+        return
+
+    creator = await db.get(Staff, ticket.created_by_id)
+    if creator is None or not creator.is_admin:
+        return
+
+    replies_result = await db.scalars(
+        select(TicketReply)
+        .where(TicketReply.event_id == ticket.event_id, TicketReply.ticket_id == ticket.id)
+        .order_by(TicketReply.created_at.asc(), TicketReply.id.asc())
+    )
+    replies = list(replies_result.all())
+    conversation_lines = [
+        f"Тикет #{ticket.id}: {ticket.title}",
+        f"Описание тикета: {ticket.description or '—'}",
+        f"Создал организатор: {creator.name}",
+        f"Ответил организатор: {current_staff.name}",
+        "Разговор:",
+    ]
+    for item in replies:
+        author = current_staff.name if item.from_staff_id == current_staff.id else f"staff:{item.from_staff_id}"
+        conversation_lines.append(f"- {author}: {item.content}")
+    conversation = "\n".join(conversation_lines)
+
+    decision = await AlicePlanner().assess_knowledge_candidate(
+        conversation=conversation,
+        system_prompt=build_knowledge_capture_prompt(),
+    )
+    if not decision.useful or not decision.content:
+        return
+
+    title = decision.title or f"Знание из тикета #{ticket.id}: {ticket.title}"
+    link = KnowledgeBaseLink(
+        event_id=ticket.event_id,
+        title=title[:255],
+        url=f"admin://tickets/{ticket.id}/replies/{reply.id}",
+        description=decision.reason,
+        tags=decision.tags or ["ticket_reply"],
+        is_active=True,
+        visibility=ticket.visibility,
+    )
+    db.add(link)
+    await db.flush()
+    await index_document_chunks(
+        db,
+        event_id=ticket.event_id,
+        content=decision.content.encode("utf-8"),
+        source_title=link.title,
+        source_url=link.url,
+        knowledge_base_link_id=link.id,
+        metadata={
+            "source": "ticket_reply",
+            "ticket_id": ticket.id,
+            "reply_id": reply.id,
+        },
     )
 
 
@@ -222,7 +295,18 @@ async def create_ticket_reply(
         visibility=payload.visibility,
     )
     db.add(reply)
+    await db.flush()
     ticket.updated_at = reply.created_at
+    try:
+        await _maybe_capture_organizer_reply_as_knowledge(
+            db,
+            ticket=ticket,
+            reply=reply,
+            current_staff=current_staff,
+        )
+    except Exception:
+        # KB capture must never break ticket replies.
+        logger.exception("Failed to capture ticket reply as knowledge: ticket_id=%s reply_id=%s", ticket.id, reply.id)
     await db.commit()
     loaded = await db.scalar(
         select(TicketReply)
@@ -249,18 +333,27 @@ async def attach_ticket_document(
     document_id = uuid4().hex
     filename = _safe_filename(file.filename or "document")
     destination = _document_storage_dir() / str(event_id) / "tickets" / str(ticket_id) / f"{document_id}_{filename}"
-    size = await _save_upload(file, destination)
+    content = await _save_upload(file, destination)
     document = {
         "id": document_id,
         "title": title or filename,
         "filename": filename,
         "content_type": file.content_type,
-        "size": size,
+        "size": len(content),
         "path": str(destination),
         "uploaded_by_id": current_staff.id,
         "created_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
     }
     ticket.documents = [*ticket.documents, document]
+    await index_document_chunks(
+        db,
+        event_id=event_id,
+        content=content,
+        source_title=document["title"],
+        source_url=document["path"],
+        ticket_id=ticket_id,
+        metadata={"filename": filename, "content_type": file.content_type},
+    )
     await db.commit()
     return schemas.DocumentAttachment.model_validate(document)
 
