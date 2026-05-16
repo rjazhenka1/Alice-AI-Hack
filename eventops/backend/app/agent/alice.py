@@ -21,8 +21,14 @@ logger = logging.getLogger(__name__)
 class PlannedCommand:
     kind: str
     message: str
+    target: str | None = None
     title: str | None = None
     description: str | None = None
+    assignees: str | list[str] | None = None
+    ticket_id: int | None = None
+    status: str | None = None
+    keywords: list[str] | None = None
+    answer: str | None = None
 
 
 @dataclass(slots=True)
@@ -384,9 +390,11 @@ class AlicePlanner:
     async def _plan_remote(self, *, text: str, system_prompt: str | None) -> PlannedCommand | None:
         request_prompt = (
             "Верни только JSON без markdown в формате "
-            '{"kind":"operational|clarification|informational|imprecise|answered",'
-            '"message":"...","title":"...","description":"..."}. '
-            "message должен быть конкретным и полезным: 2-4 коротких предложения, "
+            '{"kind":"operational|clarification|informational|answered",'
+            '"target":"create|respond|change_status|null","title":"...|null","description":"...|null",'
+            '"assignees":"all|[... ]|null","id":"int|null","status":"...|null",'
+            '"keywords":"[...]|null","answer":"...|null","text":"..."}. '
+            "text должен быть конкретным и полезным: 2-4 коротких предложения, "
             "без confidential-утечек. Если запрос неясный — kind=clarification или kind=answered."
         )
         payload = {
@@ -451,16 +459,48 @@ class AlicePlanner:
             return self._plan_local(raw_text)
 
         kind = str(parsed.get("kind", "answered"))
-        message = str(parsed.get("message", "Не удалось разобрать ответ модели."))
+        text_field = parsed.get("text")
+        message_field = parsed.get("message")
+        answer_field = parsed.get("answer")
+        message = str(text_field or message_field or answer_field or "Не удалось разобрать ответ модели.")
+        target_raw = parsed.get("target")
+        target = str(target_raw) if target_raw is not None else None
         title = parsed.get("title")
         description = parsed.get("description")
+        assignees_raw = parsed.get("assignees")
+        assignees: str | list[str] | None
+        if isinstance(assignees_raw, str):
+            assignees = assignees_raw
+        elif isinstance(assignees_raw, list):
+            assignees = [str(item) for item in assignees_raw if str(item).strip()]
+        else:
+            assignees = None
+
+        ticket_id_raw = parsed.get("id")
+        try:
+            ticket_id = int(ticket_id_raw) if ticket_id_raw is not None else None
+        except Exception:
+            ticket_id = None
+
+        status_raw = parsed.get("status")
+        status = str(status_raw) if status_raw is not None else None
+
+        keywords_raw = parsed.get("keywords")
+        keywords = [str(item) for item in keywords_raw] if isinstance(keywords_raw, list) else None
+
         if kind not in {"operational", "clarification", "informational", "imprecise", "answered"}:
             kind = "answered"
         return PlannedCommand(
             kind=kind,
             message=message,
+            target=target,
             title=str(title) if title is not None else None,
             description=str(description) if description is not None else None,
+            assignees=assignees,
+            ticket_id=ticket_id,
+            status=status,
+            keywords=keywords,
+            answer=str(answer_field) if answer_field is not None else None,
         )
 
     def _parse_knowledge_decision_json(self, raw_text: str) -> KnowledgeCaptureDecision:

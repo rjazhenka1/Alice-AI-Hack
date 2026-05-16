@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from .. import schemas
 from ..auth import get_current_staff
@@ -11,6 +12,10 @@ from ..models import Message, Role, Staff, Visibility
 from ..notifier import enqueue_notification
 
 router = APIRouter(prefix="/events/{event_id}/messages", tags=["messages"])
+
+
+def _serialize_message(message: Message) -> schemas.Message:
+    return schemas.Message.model_validate(message)
 
 
 def _visible_message_filter(current_staff: Staff):
@@ -121,10 +126,11 @@ async def list_messages(
     await _ensure_event_access(event_id, current_staff)
     result = await db.scalars(
         select(Message)
+        .options(selectinload(Message.from_staff).selectinload(Staff.role))
         .where(_visible_message_filter(current_staff))
         .order_by(Message.created_at.desc(), Message.id.desc())
     )
-    return list(result)
+    return [_serialize_message(item) for item in result]
 
 
 @router.post("", response_model=schemas.Message, status_code=status.HTTP_201_CREATED)
@@ -146,9 +152,15 @@ async def create_message(
     )
     db.add(message)
     await db.commit()
-    await db.refresh(message)
+    message = await db.scalar(
+        select(Message)
+        .options(selectinload(Message.from_staff).selectinload(Staff.role))
+        .where(Message.id == message.id)
+    )
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found after create")
     await _enqueue_message_delivery(targets, current_staff, payload.content)
-    return message
+    return _serialize_message(message)
 
 
 @router.patch("/{message_id}/read", response_model=schemas.Message)
@@ -160,7 +172,9 @@ async def mark_message_read(
 ) -> Message:
     await _ensure_event_access(event_id, current_staff)
     message = await db.scalar(
-        select(Message).where(
+        select(Message)
+        .options(selectinload(Message.from_staff).selectinload(Staff.role))
+        .where(
             Message.id == message_id,
             Message.event_id == event_id,
             _visible_message_filter(current_staff),
@@ -170,5 +184,4 @@ async def mark_message_read(
         raise HTTPException(status_code=404, detail="Message not found")
     message.is_read = True  # type: ignore[assignment]
     await db.commit()
-    await db.refresh(message)
-    return message
+    return _serialize_message(message)

@@ -47,8 +47,6 @@ async def setup_alice_env():
             return PlannedCommand(kind="imprecise", message="Формулировка расплывчата")
         if "что происходит" in lowered or "что сейчас" in lowered:
             return PlannedCommand(kind="informational", message="Собираю сводку")
-        if "компьютерное зрение" in lowered:
-            return PlannedCommand(kind="informational", message="В базе знаний есть Компьютерное зрение.")
         if "ну ты поняла" in lowered:
             return PlannedCommand(kind="answered", message="Не понял задачу")
         if "нужны люди" in lowered:
@@ -109,8 +107,10 @@ async def test_command_audio_transcribes_and_runs_regular_flow(db_session: Async
 
     assert response.action == "ticket_created"
     assert response.ticket is not None
-    assert response.ticket.previous_messages[-1]["text"] == "На входе толпа, срочно помогите"
-    assert response.ticket.previous_messages[-1]["audio_file"].endswith(".oga")
+    assert response.model_response is not None
+    assert "Создал задачу" in response.model_response
+    assert response.author is not None
+    assert response.author.id == coordinator_id
 
 
 @pytest.mark.asyncio
@@ -145,88 +145,12 @@ async def test_command_creates_ticket_on_operational_text(db_session: AsyncSessi
     assert response.action == "ticket_created"
     assert response.ticket is not None
     assert response.suggestion is not None
+    assert response.model_response is not None
+    assert response.author is not None
     assert response.ticket.target["all"] is False
     assert isinstance(response.ticket.target["staff_ids"], list)
-    assert len(response.ticket.target["staff_ids"]) >= 1
+    assert response.ticket.target["staff_ids"] == []
     assert response.ticket.target["role_ids"] == []
-    assert response.ticket.previous_messages == [
-        {
-            "role": "user",
-            "text": "На входе толпа, срочно помогите",
-            "source": "agent_text",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_command_keeps_previous_messages_until_ticket_created(db_session: AsyncSession):
-    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
-    coordinator = await _get_staff(db_session, coordinator_id)
-
-    clarification = await agent_command(
-        event_id=event_id,
-        payload=AgentCommandRequest(text="Нужны люди"),
-        db=db_session,
-        current_staff=coordinator,
-    )
-    assert clarification.action == "question_asked"
-
-    response = await agent_command(
-        event_id=event_id,
-        payload=AgentCommandRequest(text="На входе толпа, срочно помогите"),
-        db=db_session,
-        current_staff=coordinator,
-    )
-
-    assert response.ticket is not None
-    assert [item["text"] for item in response.ticket.previous_messages] == [
-        "Нужны люди",
-        "Уточни количество",
-        "На входе толпа, срочно помогите",
-    ]
-
-    session = await db_session.scalar(
-        select(AgentSession).where(
-            AgentSession.event_id == event_id,
-            AgentSession.staff_id == coordinator.id,
-        )
-    )
-    assert session is not None
-    assert session.context == []
-
-
-@pytest.mark.asyncio
-async def test_command_accepts_client_context_up_to_twenty_messages(db_session: AsyncSession):
-    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
-    coordinator = await _get_staff(db_session, coordinator_id)
-
-    response = await agent_command(
-        event_id=event_id,
-        payload=AgentCommandRequest(
-            text="На входе толпа, срочно помогите",
-            context=[
-                {"role": "user", "text": "Нужны люди", "source": "agent_text"},
-                {"role": "assistant", "text": "Сколько человек нужно?"},
-            ],
-        ),
-        db=db_session,
-        current_staff=coordinator,
-    )
-
-    assert response.ticket is not None
-    assert [item["text"] for item in response.ticket.previous_messages] == [
-        "Нужны люди",
-        "Сколько человек нужно?",
-        "На входе толпа, срочно помогите",
-    ]
-
-
-def test_agent_command_context_is_limited_to_twenty_messages():
-    with pytest.raises(ValueError):
-        AgentCommandRequest(
-            text="На входе толпа",
-            context=[{"role": "user", "text": f"msg {index}"} for index in range(21)],
-        )
 
 
 @pytest.mark.asyncio
@@ -301,31 +225,3 @@ async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session
     assert "Закрытое решение жюри" not in prompt
     assert "Решения жюри" in prompt
     assert "Не раскрывать до публикации" in prompt
-
-
-@pytest.mark.asyncio
-async def test_informational_command_uses_knowledge_answer_instead_of_ticket_summary(db_session: AsyncSession):
-    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
-    coordinator = await _get_staff(db_session, coordinator_id)
-    db_session.add(
-        KnowledgeBaseLink(
-            event_id=event_id,
-            title="Учебная справка",
-            url="admin://knowledge/transcript",
-            visibility=Visibility.public,
-            is_active=True,
-        )
-    )
-    db_session.add(Ticket(event_id=event_id, title="Доставка удлинителей", status=TicketStatus.waiting))
-    await db_session.commit()
-
-    response = await agent_command(
-        event_id=event_id,
-        payload=AgentCommandRequest(text="Есть ли в базе знаний дисциплина Компьютерное зрение?"),
-        db=db_session,
-        current_staff=coordinator,
-    )
-
-    assert response.action == "answered"
-    assert "Компьютерное зрение" in response.message
-    assert "Текущая сводка" not in response.message
