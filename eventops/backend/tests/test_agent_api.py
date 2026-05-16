@@ -47,6 +47,8 @@ async def setup_alice_env():
             return PlannedCommand(kind="imprecise", message="Формулировка расплывчата")
         if "что происходит" in lowered or "что сейчас" in lowered:
             return PlannedCommand(kind="informational", message="Собираю сводку")
+        if "компьютерное зрение" in lowered:
+            return PlannedCommand(kind="informational", message="В базе знаний есть Компьютерное зрение.")
         if "ну ты поняла" in lowered:
             return PlannedCommand(kind="answered", message="Не понял задачу")
         if "нужны люди" in lowered:
@@ -299,3 +301,31 @@ async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session
     assert "Закрытое решение жюри" not in prompt
     assert "Решения жюри" in prompt
     assert "Не раскрывать до публикации" in prompt
+
+
+@pytest.mark.asyncio
+async def test_informational_command_uses_knowledge_answer_instead_of_ticket_summary(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    db_session.add(
+        KnowledgeBaseLink(
+            event_id=event_id,
+            title="Учебная справка",
+            url="admin://knowledge/transcript",
+            visibility=Visibility.public,
+            is_active=True,
+        )
+    )
+    db_session.add(Ticket(event_id=event_id, title="Доставка удлинителей", status=TicketStatus.waiting))
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Есть ли в базе знаний дисциплина Компьютерное зрение?"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "answered"
+    assert "Компьютерное зрение" in response.message
+    assert "Текущая сводка" not in response.message

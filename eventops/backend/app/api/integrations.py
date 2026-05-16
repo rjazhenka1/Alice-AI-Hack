@@ -428,15 +428,10 @@ async def telegram_webhook(
         try:
             reply = await _handle_telegram_document(db, staff=staff, telegram_message=telegram_message)
             await _store_incoming_message(db, staff, f"[document] {reply}")
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to process Telegram document/photo: telegram_id=%s", telegram_id)
-            await enqueue_notification(
-                {
-                    "telegram_id": str(chat.get("id") or telegram_id),
-                    "message": "Не смогла обработать документ. Попробуйте позже или отправьте текстом.",
-                }
-            )
-            raise HTTPException(status_code=502, detail="Failed to process Telegram document") from exc
+            await db.rollback()
+            return {"ok": True}
     else:
         await _store_incoming_message(db, staff, str(text))
         try:

@@ -1,22 +1,75 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
+import string
 from typing import Any
 
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .agent.alice import YandexEmbeddingClient
+from .agent.alice import VisionOCRClient, YandexEmbeddingClient
 from .models import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 160
+MIN_PRINTABLE_RATIO = 0.85
+IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/tiff", "image/bmp"}
+
+
+def _infer_content_type(
+    *,
+    source_title: str,
+    source_url: str | None,
+    metadata: dict[str, Any] | None,
+) -> str | None:
+    metadata = metadata or {}
+    content_type = metadata.get("content_type")
+    if isinstance(content_type, str) and content_type:
+        return content_type
+
+    for value in (metadata.get("filename"), source_url, source_title):
+        if isinstance(value, str) and value:
+            guessed, _ = mimetypes.guess_type(value)
+            if guessed:
+                return guessed
+    return None
+
+
+async def extract_indexable_text(
+    content: bytes,
+    *,
+    source_title: str,
+    source_url: str | None,
+    metadata: dict[str, Any] | None,
+) -> str:
+    content_type = _infer_content_type(source_title=source_title, source_url=source_url, metadata=metadata)
+    if content_type in IMAGE_MIME_TYPES:
+        try:
+            return await VisionOCRClient().recognize_text(content=content, mime_type=content_type)
+        except Exception:
+            logger.exception("Failed to extract text with OCR: source_title=%s content_type=%s", source_title, content_type)
+            return ""
+
+    return decode_document_text(content)
 
 
 def decode_document_text(content: bytes) -> str:
-    return content.decode("utf-8", errors="ignore").strip()
+    if b"\x00" in content:
+        return ""
+
+    text_value = content.decode("utf-8", errors="ignore").strip()
+    if not text_value:
+        return ""
+
+    printable = set(string.printable)
+    printable_count = sum(1 for char in text_value if char in printable or char.isprintable())
+    if printable_count / max(len(text_value), 1) < MIN_PRINTABLE_RATIO:
+        return ""
+
+    return text_value.replace("\x00", "").strip()
 
 
 def split_text(text_value: str, *, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -50,7 +103,14 @@ async def index_document_chunks(
     ticket_id: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> int:
-    chunks = split_text(decode_document_text(content))
+    chunks = split_text(
+        await extract_indexable_text(
+            content,
+            source_title=source_title,
+            source_url=source_url,
+            metadata=metadata,
+        )
+    )
     if not chunks:
         return 0
 
@@ -77,11 +137,12 @@ async def index_document_chunks(
 
         if is_postgres:
             try:
-                embedding = await embedding_client.embed(chunk, model="text-search-doc")
-                await db.execute(
-                    text("UPDATE document_chunks SET embedding = (:embedding)::vector WHERE id = :chunk_id"),
-                    {"embedding": vector_literal(embedding), "chunk_id": chunk_id},
-                )
+                async with db.begin_nested():
+                    embedding = await embedding_client.embed(chunk, model="text-search-doc")
+                    await db.execute(
+                        text("UPDATE document_chunks SET embedding = (:embedding)::vector WHERE id = :chunk_id"),
+                        {"embedding": vector_literal(embedding), "chunk_id": chunk_id},
+                    )
             except Exception:
                 logger.exception("Failed to embed document chunk: chunk_id=%s", chunk_id)
         indexed += 1

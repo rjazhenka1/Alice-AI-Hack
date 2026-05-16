@@ -27,10 +27,12 @@ async def init_models() -> None:
         await conn.run_sync(Base.metadata.create_all)
         if engine.url.get_backend_name().startswith("postgresql"):
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            await conn.execute(text("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector(768)"))
+            await conn.execute(text("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector(256)"))
+            await conn.execute(text("DROP INDEX IF EXISTS ix_chunks_embedding"))
+            await conn.execute(text("ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector(256)"))
             await conn.execute(
                 text(
-                    "CREATE INDEX IF NOT EXISTS ix_chunks_embedding "
+                    "CREATE INDEX ix_chunks_embedding "
                     "ON document_chunks USING hnsw (embedding vector_cosine_ops) "
                     "WITH (m = 16, ef_construction = 64)"
                 )

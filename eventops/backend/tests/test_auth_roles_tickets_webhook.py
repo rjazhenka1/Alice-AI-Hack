@@ -539,3 +539,57 @@ async def test_telegram_document_can_upload_to_knowledge_and_be_used_by_rag(
     )
     assert search_response.status_code == 200
     assert search_response.json()[0]["source_title"] == "Регламент регистрации"
+
+
+async def test_telegram_photo_kb_upload_extracts_text_for_rag(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    event = await seed_event(db_session)
+    staff = await seed_staff(db_session, event.id, name="Telegram Admin", telegram_id="781", is_admin=True)
+    await db_session.commit()
+    queued_notifications: list[dict[str, str]] = []
+
+    async def fake_get_file_path(client, token, file_id):
+        return "photos/image.jpg"
+
+    async def fake_download_bytes(client, token, file_path):
+        return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x02binary-image"
+
+    async def fake_enqueue_notification(payload: dict[str, str]) -> None:
+        queued_notifications.append(payload)
+
+    async def fake_recognize_text(self, *, content, mime_type):
+        assert content.startswith(b"\xff\xd8")
+        assert mime_type == "image/jpeg"
+        return "Схема входа: проход через левую дверь"
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr("app.api.integrations._get_telegram_file_path", fake_get_file_path)
+    monkeypatch.setattr("app.api.integrations._download_telegram_file_bytes", fake_download_bytes)
+    monkeypatch.setattr("app.api.integrations.enqueue_notification", fake_enqueue_notification)
+    monkeypatch.setattr("app.rag.VisionOCRClient.recognize_text", fake_recognize_text)
+
+    response = await client.post(
+        "/integrations/telegram/webhook",
+        json={
+            "message": {
+                "message_id": 14,
+                "from": {"id": 781},
+                "chat": {"id": 781},
+                "caption": "kb Схема входа",
+                "photo": [{"file_id": "photo-1", "file_size": 100}],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert queued_notifications[0]["message"] == "Загрузила документ в базу знаний: Схема входа. Чанков: 1."
+    link = await db_session.scalar(select(KnowledgeBaseLink).where(KnowledgeBaseLink.title == "Схема входа"))
+    assert link is not None
+    chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.knowledge_base_link_id == link.id))
+    assert chunk is not None
+    assert "проход через левую дверь" in chunk.content

@@ -134,6 +134,73 @@ class SpeechKitClient:
         return base64.b64encode(audio_bytes).decode("ascii")
 
 
+class VisionOCRClient:
+    """Yandex Vision OCR client used to extract text from uploaded images."""
+
+    def __init__(self) -> None:
+        self.api_key = os.getenv("ALICE_API_KEY")
+        self.iam_token = os.getenv("YANDEX_OCR_IAM_TOKEN")
+        self.folder_id = os.getenv("ALICE_FOLDER_ID")
+        self.timeout_seconds = 30
+        self.api_url = os.getenv("YANDEX_OCR_URL", "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText")
+        self.model = os.getenv("YANDEX_OCR_MODEL", "page")
+        languages = os.getenv("YANDEX_OCR_LANGUAGES", "ru,en")
+        self.language_codes = [item.strip() for item in languages.split(",") if item.strip()]
+
+    def _headers(self) -> dict[str, str]:
+        if self.iam_token:
+            authorization = f"Bearer {self.iam_token}"
+        elif self.api_key:
+            authorization = f"Api-Key {self.api_key}"
+        else:
+            raise RuntimeError("Yandex OCR is not configured: set ALICE_API_KEY or YANDEX_OCR_IAM_TOKEN")
+
+        headers = {
+            "Authorization": authorization,
+            "Content-Type": "application/json",
+        }
+        if self.folder_id:
+            headers["x-folder-id"] = self.folder_id
+        return headers
+
+    async def recognize_text(self, *, content: bytes, mime_type: str) -> str:
+        if not content:
+            return ""
+
+        payload = {
+            "content": base64.b64encode(content).decode("ascii"),
+            "mimeType": mime_type,
+            "languageCodes": self.language_codes,
+            "model": self.model,
+        }
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(self.api_url, headers=self._headers(), json=payload)
+                response.raise_for_status()
+                data = response.json()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("yandex_ocr_ok latency_ms=%.1f mime_type=%s", elapsed_ms, mime_type)
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning("yandex_ocr_failed latency_ms=%.1f mime_type=%s error=%s", elapsed_ms, mime_type, exc)
+            raise RuntimeError("Yandex OCR request failed") from exc
+
+        annotation = data.get("textAnnotation") or data.get("result", {}).get("textAnnotation") or {}
+        text_value = str(annotation.get("markdown") or annotation.get("fullText") or "").strip()
+        if text_value:
+            return text_value
+
+        blocks = annotation.get("blocks") or []
+        lines: list[str] = []
+        for block in blocks:
+            for line in block.get("lines") or []:
+                line_text = str(line.get("text") or "").strip()
+                if line_text:
+                    lines.append(line_text)
+        return "\n".join(lines).strip()
+
+
 class YandexEmbeddingClient:
     """Yandex text-search embeddings for RAG document/query vectors."""
 

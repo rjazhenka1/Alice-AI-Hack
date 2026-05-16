@@ -31,6 +31,7 @@ from ..schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
 
 
 MAX_SESSION_MESSAGES = 20
+KB_SNIPPET_MAX_CHARS = 1400
 IMPRECISE_SECOND_PASS_INSTRUCTION = (
     "Если запрос расплывчатый, верни kind=clarification и ровно один конкретный уточняющий вопрос. "
     "Не предлагай действий и не создавай задачу."
@@ -89,6 +90,13 @@ def _normalize_client_context(context: list[dict[str, Any]]) -> list[dict[str, s
 
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
+
+
+def _format_kb_chunk_line(chunk: dict[str, Any]) -> str:
+    content = _sanitize_line(str(chunk.get("content") or ""), max_len=KB_SNIPPET_MAX_CHARS)
+    source_title = str(chunk.get("source_title") or "Источник")
+    source_url = str(chunk.get("source_url") or "no-url")
+    return f"- {source_title}: {content} ({source_url})"
 
 
 def _build_imprecise_second_pass_prompt(system_prompt: str) -> str:
@@ -178,10 +186,7 @@ async def _load_kb_context(
     if query_text:
         chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5)
         if chunks:
-            return [
-                f"- {chunk['source_title']}: {chunk['content'][:260]} ({chunk.get('source_url') or 'no-url'})"
-                for chunk in chunks
-            ]
+            return [_format_kb_chunk_line(chunk) for chunk in chunks]
 
     result = await db.execute(
         select(KnowledgeBaseLink)
@@ -306,6 +311,13 @@ def _extract_completion_query(text: str) -> str | None:
     return tail or ""
 
 
+def _format_kb_answer(planned_message: str, kb_context: list[str]) -> str:
+    message = (planned_message or "").strip()
+    if message:
+        return message
+    return "Нашла в базе знаний:\n" + "\n".join(kb_context[:5])
+
+
 async def handle_command(
     *,
     db: AsyncSession,
@@ -411,22 +423,25 @@ async def handle_command(
     elif planned.kind == "answered":
         response = AgentCommandResponse(action="answered", message=planned.message)
     elif planned.kind == "informational":
-        ticket_result = await db.execute(
-            select(Ticket)
-            .where(Ticket.event_id == event_id)
-            .where(visible_clause)
-            .order_by(Ticket.updated_at.desc())
-            .limit(5)
-        )
-        tickets = list(ticket_result.scalars().all())
-        if not tickets:
-            response = AgentCommandResponse(action="answered", message="Сейчас активных тикетов не найдено.")
+        if kb_context:
+            response = AgentCommandResponse(action="answered", message=_format_kb_answer(planned.message, kb_context))
         else:
-            lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
-            response = AgentCommandResponse(
-                action="answered",
-                message="Текущая сводка:\n" + "\n".join(lines),
+            ticket_result = await db.execute(
+                select(Ticket)
+                .where(Ticket.event_id == event_id)
+                .where(visible_clause)
+                .order_by(Ticket.updated_at.desc())
+                .limit(5)
             )
+            tickets = list(ticket_result.scalars().all())
+            if not tickets:
+                response = AgentCommandResponse(action="answered", message="Сейчас активных тикетов не найдено.")
+            else:
+                lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
+                response = AgentCommandResponse(
+                    action="answered",
+                    message="Текущая сводка:\n" + "\n".join(lines),
+                )
     else:
         free_staff = await tools.get_free_staff(limit=2)
         suggested_ids = [member.id for member in free_staff]

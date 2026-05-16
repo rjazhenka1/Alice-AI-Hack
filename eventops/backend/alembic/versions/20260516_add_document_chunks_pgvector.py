@@ -31,7 +31,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=True),
     )
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.add_column("document_chunks", sa.Column("embedding", Vector(768), nullable=True))
+    op.add_column("document_chunks", sa.Column("embedding", Vector(256), nullable=True))
     op.create_index(
         "ix_chunks_embedding",
         "document_chunks",
