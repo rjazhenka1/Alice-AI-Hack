@@ -19,6 +19,7 @@ from app.models import (
     StaffStatus,
     Ticket,
     TicketAssignment,
+    TicketPriority,
     TicketStatus,
     Visibility,
     Zone,
@@ -151,6 +152,119 @@ async def test_command_creates_ticket_on_operational_text(db_session: AsyncSessi
     assert isinstance(response.ticket.target["staff_ids"], list)
     assert response.ticket.target["staff_ids"] == []
     assert response.ticket.target["role_ids"] == []
+    assert response.ticket.priority == TicketPriority.high
+    assert response.ticket.previous_messages == [
+        {
+            "role": "user",
+            "text": "На входе толпа, срочно помогите",
+            "source": "agent_text",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ticket_priority_defaults_to_medium_when_not_specified(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Проверьте, пожалуйста, кабели у сцены"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "ticket_created"
+    assert response.ticket is not None
+    assert response.ticket.priority == TicketPriority.medium
+
+
+@pytest.mark.asyncio
+async def test_ticket_priority_can_be_low_from_request_text(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Не срочно, поправьте подписи на стойке регистрации"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "ticket_created"
+    assert response.ticket is not None
+    assert response.ticket.priority == TicketPriority.low
+
+
+@pytest.mark.asyncio
+async def test_command_keeps_previous_messages_until_ticket_created(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    clarification = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Нужны люди"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+    assert clarification.action == "question_asked"
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="На входе толпа, срочно помогите"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert [item["text"] for item in response.ticket.previous_messages] == [
+        "Нужны люди",
+        "Уточни количество",
+        "На входе толпа, срочно помогите",
+    ]
+
+    session = await db_session.scalar(
+        select(AgentSession).where(
+            AgentSession.event_id == event_id,
+            AgentSession.staff_id == coordinator.id,
+        )
+    )
+    assert session is not None
+    assert session.context == []
+
+
+@pytest.mark.asyncio
+async def test_command_accepts_client_context_up_to_twenty_messages(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(
+            text="На входе толпа, срочно помогите",
+            context=[
+                {"role": "user", "text": "Нужны люди", "source": "agent_text"},
+                {"role": "assistant", "text": "Сколько человек нужно?"},
+            ],
+        ),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert [item["text"] for item in response.ticket.previous_messages] == [
+        "Нужны люди",
+        "Сколько человек нужно?",
+        "На входе толпа, срочно помогите",
+    ]
+
+
+def test_agent_command_context_is_limited_to_twenty_messages():
+    with pytest.raises(ValueError):
+        AgentCommandRequest(
+            text="На входе толпа",
+            context=[{"role": "user", "text": f"msg {index}"} for index in range(21)],
+        )
 
 
 @pytest.mark.asyncio
@@ -189,6 +303,13 @@ async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session
         [
             role,
             volunteer,
+            Ticket(
+                event_id=event_id,
+                title="Очередь на входе",
+                description="У центрального входа скопилась очередь из 40+ человек.",
+                status=TicketStatus.in_progress,
+                visibility=Visibility.public,
+            ),
             KnowledgeBaseLink(
                 event_id=event_id,
                 title="Публичный регламент",
@@ -225,3 +346,33 @@ async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session
     assert "Закрытое решение жюри" not in prompt
     assert "Решения жюри" in prompt
     assert "Не раскрывать до публикации" in prompt
+    assert "Очередь на входе" in prompt
+    assert "У центрального входа скопилась очередь из 40+ человек." in prompt
+
+
+@pytest.mark.asyncio
+async def test_informational_command_uses_knowledge_answer_instead_of_ticket_summary(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    db_session.add(
+        KnowledgeBaseLink(
+            event_id=event_id,
+            title="Учебная справка",
+            url="admin://knowledge/transcript",
+            visibility=Visibility.public,
+            is_active=True,
+        )
+    )
+    db_session.add(Ticket(event_id=event_id, title="Доставка удлинителей", status=TicketStatus.waiting))
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Есть ли в базе знаний дисциплина Компьютерное зрение?"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "answered"
+    assert "Компьютерное зрение" in response.message
+    assert "Текущая сводка" not in response.message

@@ -34,6 +34,7 @@ def build_system_prompt(
     confidentiality_rules: Iterable[str] | None = None,
     incident_summary: Iterable[str] | None = None,
     recent_dialogue: Iterable[dict[str, str]] | None = None,
+    global_context: str | None = None,
 ) -> str:
     """Build strict policy + few-shot prompt for planner JSON output (RAG-ready)."""
     now = datetime.now(timezone.utc).isoformat()
@@ -49,6 +50,7 @@ def build_system_prompt(
             continue
         dialogue_lines.append(f"- {role}: {text}")
     dialogue_block = "\n".join(dialogue_lines) or "- Нет истории диалога"
+    global_context_block = (global_context or "").strip() or "- Общий контекст пока пуст"
 
     return f"""
 Ты — EventOps Alice, помощник-координатор штаба соревнований.
@@ -79,6 +81,9 @@ def build_system_prompt(
 
 Последние сообщения (max 20):
 {dialogue_block}
+
+Суммарный общий контекст общения (конкатенация + сводки по 10 сообщений):
+{global_context_block}
 
 === КОНТРАКТ ВЫХОДА (СТРОГО ОДИН JSON, БЕЗ ТЕКСТА ВОКРУГ) ===
 {{

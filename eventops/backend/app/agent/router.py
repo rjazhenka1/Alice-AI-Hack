@@ -22,6 +22,7 @@ from ..models import (
     StaffStatus,
     Ticket,
     TicketAssignment,
+    TicketPriority,
     TicketStatus,
     Visibility,
     Zone,
@@ -36,6 +37,8 @@ from ..schemas import (
 
 
 MAX_SESSION_MESSAGES = 20
+SUMMARY_EVERY_MESSAGES = 10
+KB_SNIPPET_MAX_CHARS = 1400
 IMPRECISE_SECOND_PASS_INSTRUCTION = (
     "Если запрос расплывчатый, верни kind=clarification и ровно один конкретный уточняющий вопрос. "
     "Не предлагай действий и не создавай задачу."
@@ -45,6 +48,114 @@ IMPRECISE_FALLBACK_QUESTION = "Уточни, пожалуйста, что име
 
 def _trim_context(context: list[dict[str, str]]) -> list[dict[str, str]]:
     return context[-MAX_SESSION_MESSAGES:]
+
+
+def _message_record(*, role: str, text: str, audio_file: str | None = None, source: str | None = None) -> dict[str, str]:
+    record = {"role": role, "text": text}
+    if audio_file:
+        record["audio_file"] = audio_file
+    if source:
+        record["source"] = source
+    return record
+
+
+def _is_summary_record(item: dict[str, Any]) -> bool:
+    return str(item.get("role") or "").strip().lower() == "summary"
+
+
+def _summarize_messages_chunk(messages: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in messages:
+        role = str(item.get("role") or "unknown").strip()
+        text = _sanitize_line(str(item.get("text") or ""), max_len=140)
+        if not text:
+            continue
+        parts.append(f"{role}: {text}")
+    if not parts:
+        return "Сводка: пустой фрагмент диалога."
+    return "Сводка 10 сообщений: " + " | ".join(parts)
+
+
+def _compress_context_with_summaries(context: list[dict[str, Any]]) -> list[dict[str, str]]:
+    summaries: list[dict[str, str]] = []
+    raw: list[dict[str, Any]] = []
+
+    for item in context:
+        if _is_summary_record(item):
+            text = str(item.get("text") or "").strip()
+            if text:
+                summaries.append(_message_record(role="summary", text=text, source=str(item.get("source") or "auto_summary")))
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            raw.append(item)
+
+    while len(raw) >= SUMMARY_EVERY_MESSAGES:
+        chunk = raw[:SUMMARY_EVERY_MESSAGES]
+        raw = raw[SUMMARY_EVERY_MESSAGES:]
+        summaries.append(_message_record(role="summary", text=_summarize_messages_chunk(chunk), source="auto_summary"))
+
+    remainder: list[dict[str, str]] = []
+    for item in raw:
+        remainder.append(
+            _message_record(
+                role=str(item.get("role") or "unknown"),
+                text=str(item.get("text") or ""),
+                audio_file=str(item.get("audio_file")) if item.get("audio_file") else None,
+                source=str(item.get("source")) if item.get("source") else None,
+            )
+        )
+
+    compressed = summaries + remainder
+    return compressed[-(MAX_SESSION_MESSAGES + 50) :]
+
+
+def _global_context_for_prompt(context: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for item in context:
+        role = str(item.get("role") or "unknown").strip()
+        text = _sanitize_line(str(item.get("text") or ""), max_len=220)
+        if not text:
+            continue
+        lines.append(f"- {role}: {text}")
+    return "\n".join(lines) if lines else "- Общий контекст пока пуст"
+
+
+def _previous_messages(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    raw_only = [item for item in context if not _is_summary_record(item)]
+    for item in _trim_context(raw_only):
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        record: dict[str, Any] = {
+            "role": str(item.get("role") or "unknown"),
+            "text": text,
+        }
+        if item.get("audio_file"):
+            record["audio_file"] = str(item["audio_file"])
+        if item.get("source"):
+            record["source"] = str(item["source"])
+        messages.append(record)
+    return messages
+
+
+def _normalize_client_context(context: list[dict[str, Any]]) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for item in context[-MAX_SESSION_MESSAGES:]:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        messages.append(
+            _message_record(
+                role=role,
+                text=text,
+                audio_file=str(item["audio_file"]) if item.get("audio_file") else None,
+                source=str(item["source"]) if item.get("source") else None,
+            )
+        )
+    return messages
 
 
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
@@ -186,7 +297,9 @@ async def _load_incident_summary(
     tickets = list(result.scalars().all())
     lines: list[str] = []
     for ticket in tickets:
-        lines.append(f"- #{ticket.id} {ticket.title} [{ticket.status.value}]")
+        body = _sanitize_line(ticket.description or "", max_len=220)
+        body_tail = f": {body}" if body else ""
+        lines.append(f"- #{ticket.id} {ticket.title} [{ticket.status.value}]{body_tail}")
     return lines
 
 
@@ -364,6 +477,42 @@ def _finalize_response(response: AgentCommandResponse) -> AgentCommandResponse:
     return response
 
 
+def _infer_ticket_priority(*, text: str, title: str | None, description: str | None) -> TicketPriority:
+    """Infer ticket priority from user wording; default is medium."""
+    haystack = " ".join(
+        part.strip().lower()
+        for part in (text, title or "", description or "")
+        if part and part.strip()
+    )
+
+    if not haystack:
+        return TicketPriority.medium
+
+    high_markers = (
+        "срочно",
+        "критично",
+        "критический",
+        "немедленно",
+        "asap",
+        "urgent",
+    )
+    low_markers = (
+        "не срочно",
+        "несрочно",
+        "низкий приоритет",
+        "когда будет время",
+        "потом",
+        "later",
+        "low priority",
+    )
+
+    if any(marker in haystack for marker in low_markers):
+        return TicketPriority.low
+    if any(marker in haystack for marker in high_markers):
+        return TicketPriority.high
+    return TicketPriority.medium
+
+
 async def handle_command(
     *,
     db: AsyncSession,
@@ -373,8 +522,13 @@ async def handle_command(
 ) -> AgentCommandResponse:
     response_author, response_author_role = await _response_author(db, current_staff)
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
-    context = list(session.context or [])
-    context.append({"role": "user", "text": text})
+    context = (
+        _normalize_client_context(client_context)
+        if client_context is not None
+        else list(session.context or [])
+    )
+    context.append(_message_record(role="user", text=text, audio_file=audio_file, source=source))
+    context = _compress_context_with_summaries(context)
 
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)
     planner = AlicePlanner()
@@ -402,6 +556,7 @@ async def handle_command(
         confidentiality_rules=confidentiality_rules,
         incident_summary=incident_summary,
         recent_dialogue=_trim_context(context[:-1]),
+        global_context=_global_context_for_prompt(context[:-1]),
     )
 
     completion_query = _extract_completion_query(text)
@@ -451,9 +606,12 @@ async def handle_command(
                 ticket=_serialize_ticket(target_ticket_for_response),
             )
 
-        response = _finalize_response(response)
-        context.append({"role": "assistant", "text": response.model_response or response.message})
-        session.context = _trim_context(context)
+        context.append({"role": "assistant", "text": response.message})
+        context = _compress_context_with_summaries(context)
+        if response.action == "answered":
+            session.context = [item for item in context if _is_summary_record(item)]
+        else:
+            session.context = context
         await db.commit()
         return response
 
@@ -466,6 +624,57 @@ async def handle_command(
     )
 
     if planned.kind == "clarification":
+        response = AgentCommandResponse(action="question_asked", message=planned.message)
+    elif planned.kind == "answered":
+        response = AgentCommandResponse(action="answered", message=planned.message)
+    elif planned.kind == "informational":
+        if kb_context:
+            response = AgentCommandResponse(action="answered", message=_format_kb_answer(planned.message, kb_context))
+        else:
+            ticket_result = await db.execute(
+                select(Ticket)
+                .where(Ticket.event_id == event_id)
+                .where(visible_clause)
+                .order_by(Ticket.updated_at.desc())
+                .limit(5)
+            )
+            tickets = list(ticket_result.scalars().all())
+            if not tickets:
+                response = AgentCommandResponse(action="answered", message="Сейчас активных тикетов не найдено.")
+            else:
+                lines = [f"- #{t.id} {t.title} ({t.status.value})" for t in tickets]
+                response = AgentCommandResponse(
+                    action="answered",
+                    message="Текущая сводка:\n" + "\n".join(lines),
+                )
+    else:
+        free_staff = await tools.get_free_staff(limit=2)
+        suggested_ids = [member.id for member in free_staff]
+        suggested_names = [member.name for member in free_staff]
+
+        reasoning = (
+            f"Рекомендую {', '.join(suggested_names)} — они свободны сейчас."
+            if suggested_names
+            else "Свободные исполнители не найдены, требуется ручное назначение."
+        )
+        ai_suggestion = {
+            "reasoning": reasoning,
+            "suggested_staff_ids": suggested_ids,
+            "confidence": "medium" if suggested_ids else "low",
+        }
+        created_ticket = await tools.create_ticket(
+            title=planned.title or "Операционная задача",
+            description=planned.description,
+            priority=_infer_ticket_priority(
+                text=text,
+                title=planned.title,
+                description=planned.description,
+            ),
+            previous_messages=_previous_messages(context),
+            ai_suggestion=ai_suggestion,
+        )
+        ticket_for_response = await _load_ticket_for_response(db, event_id=event_id, ticket_id=created_ticket.id)
+
         response = AgentCommandResponse(
             action="question_asked",
             message=planned.message,
@@ -646,24 +855,12 @@ async def handle_command(
             model_text = (planned.message or "").strip()
             full_model_response = f"{model_text}\n\n{operational_text}" if model_text else operational_text
 
-            response = AgentCommandResponse(
-                action="ticket_created",
-                message=operational_text,
-                model_response=full_model_response,
-                author=response_author,
-                author_role=response_author_role,
-                suggestion=AiSuggestion(
-                    reasoning=reasoning,
-                    suggested_staff_ids=target_payload["staff_ids"],
-                    confidence="low",
-                    ticket_id=created_ticket.id,
-                ),
-                ticket=_serialize_ticket(ticket_for_response),
-            )
-
-    response = _finalize_response(response)
-    context.append({"role": "assistant", "text": response.model_response or response.message})
-    session.context = _trim_context(context)
+    context.append({"role": "assistant", "text": response.message})
+    context = _compress_context_with_summaries(context)
+    if response.action in {"ticket_created", "answered"}:
+        session.context = [item for item in context if _is_summary_record(item)]
+    else:
+        session.context = context
     await db.commit()
     return response
 
