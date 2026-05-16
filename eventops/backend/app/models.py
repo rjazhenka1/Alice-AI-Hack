@@ -4,6 +4,7 @@ EventOps AI — SQLAlchemy models
 
 import enum
 from datetime import UTC, datetime
+from typing import Any
 from sqlalchemy import (
     Boolean, Column, DateTime, Enum, ForeignKey,
     Integer, JSON, String, Text
@@ -177,6 +178,29 @@ class Ticket(Base):
     role        = relationship("Role",   foreign_keys=[assignee_role_id])
     assignments = relationship("TicketAssignment", back_populates="ticket",
                                cascade="all, delete-orphan")
+
+    @property
+    def target(self) -> dict[str, Any]:
+        payload = self.ai_suggestion if isinstance(self.ai_suggestion, dict) else {}
+        raw = payload.get("target") if isinstance(payload, dict) else None
+        if isinstance(raw, dict):
+            return {
+                "all": bool(raw.get("all", False)),
+                "role_ids": [int(v) for v in raw.get("role_ids", []) if isinstance(v, int)],
+                "staff_ids": [int(v) for v in raw.get("staff_ids", []) if isinstance(v, int)],
+            }
+        return {"all": False, "role_ids": [], "staff_ids": []}
+
+    @target.setter
+    def target(self, value: dict[str, Any] | None) -> None:
+        payload = self.ai_suggestion if isinstance(self.ai_suggestion, dict) else {}
+        target_payload = value or {}
+        payload["target"] = {
+            "all": bool(target_payload.get("all", False)),
+            "role_ids": [int(v) for v in target_payload.get("role_ids", []) if isinstance(v, int)],
+            "staff_ids": [int(v) for v in target_payload.get("staff_ids", []) if isinstance(v, int)],
+        }
+        self.ai_suggestion = payload
 
 
 class TicketAssignment(Base):

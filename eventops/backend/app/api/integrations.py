@@ -180,7 +180,7 @@ async def telegram_webhook(
         await _store_incoming_message(db, staff, _voice_message_content(voice, voice_path))
         reply = "Приняла голосовое сообщение и передала в штаб."
     else:
-        await _store_incoming_message(db, staff, text)
+        await _store_incoming_message(db, staff, str(text))
         reply = "Приняла сообщение и передала в штаб."
 
     await enqueue_notification(

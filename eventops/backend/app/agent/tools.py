@@ -8,8 +8,7 @@ from typing import Any
 from sqlalchemy import Select, and_, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import (
-    Role,
+from models import (
     Staff,
     StaffStatus,
     Ticket,
@@ -69,8 +68,15 @@ class AgentTools:
         priority: TicketPriority = TicketPriority.medium,
         visibility: Visibility = Visibility.public,
         assignee_role_id: int | None = None,
+        target: dict[str, Any] | None = None,
         ai_suggestion: dict[str, Any] | None = None,
     ) -> Ticket:
+        resolved_target = self._resolve_target(
+            target=target,
+            assignee_role_id=assignee_role_id,
+            ai_suggestion=ai_suggestion,
+        )
+
         ticket = Ticket(
             event_id=self.event_id,
             title=title,
@@ -83,10 +89,38 @@ class AgentTools:
             assignee_role_id=assignee_role_id,
             ai_suggestion=ai_suggestion,
         )
+        ticket.target = resolved_target
         self.db.add(ticket)
         await self.db.flush()
         await self.db.refresh(ticket)
         return ticket
+
+    @staticmethod
+    def _resolve_target(
+        *,
+        target: dict[str, Any] | None,
+        assignee_role_id: int | None,
+        ai_suggestion: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if isinstance(target, dict):
+            return {
+                "all": bool(target.get("all", False)),
+                "role_ids": [int(v) for v in target.get("role_ids", []) if isinstance(v, int)],
+                "staff_ids": [int(v) for v in target.get("staff_ids", []) if isinstance(v, int)],
+            }
+
+        role_ids: list[int] = [assignee_role_id] if isinstance(assignee_role_id, int) else []
+        staff_ids: list[int] = []
+        if isinstance(ai_suggestion, dict):
+            raw_staff_ids = ai_suggestion.get("suggested_staff_ids") or []
+            if isinstance(raw_staff_ids, list):
+                staff_ids = [int(v) for v in raw_staff_ids if isinstance(v, int)]
+
+        return {
+            "all": not role_ids and not staff_ids,
+            "role_ids": role_ids,
+            "staff_ids": staff_ids,
+        }
 
     async def assign_staff(self, *, ticket: Ticket, staff_ids: list[int]) -> Ticket:
         unique_staff_ids = list(dict.fromkeys(staff_ids))

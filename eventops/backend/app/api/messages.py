@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +14,7 @@ router = APIRouter(prefix="/events/{event_id}/messages", tags=["messages"])
 
 
 def _visible_message_filter(current_staff: Staff):
-    confidential_allowed = current_staff.is_admin
+    confidential_allowed: Any = current_staff.is_admin
     if current_staff.role_id is not None:
         confidential_allowed = or_(
             current_staff.is_admin,
@@ -24,7 +26,7 @@ def _visible_message_filter(current_staff: Staff):
             ),
         )
 
-    visibility_filter = Message.visibility == Visibility.public
+    visibility_filter: Any = Message.visibility == Visibility.public
     if current_staff.role_id is not None:
         visibility_filter = or_(
             visibility_filter,
@@ -166,7 +168,7 @@ async def mark_message_read(
     )
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    message.is_read = True
+    message.is_read = True  # type: ignore[assignment]
     await db.commit()
     await db.refresh(message)
     return message

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import and_, false, or_, select, true
@@ -11,15 +12,54 @@ from sqlalchemy.orm import selectinload
 from .alice import AlicePlanner
 from .prompts import build_system_prompt
 from .tools import AgentTools
-from ..models import AgentSession, Event, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Visibility, Zone
-from ..schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
+from models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Visibility, Zone
+from schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
 
 
 MAX_SESSION_MESSAGES = 20
+IMPRECISE_SECOND_PASS_INSTRUCTION = (
+    "Если запрос расплывчатый, верни kind=clarification и ровно один конкретный уточняющий вопрос. "
+    "Не предлагай действий и не создавай задачу."
+)
+IMPRECISE_FALLBACK_QUESTION = "Уточни, пожалуйста, что именно нужно сделать, где и в какой срок."
 
 
 def _trim_context(context: list[dict[str, str]]) -> list[dict[str, str]]:
     return context[-MAX_SESSION_MESSAGES:]
+
+
+def _sanitize_line(text: str, *, max_len: int = 220) -> str:
+    return " ".join((text or "").split())[:max_len]
+
+
+def _build_imprecise_second_pass_prompt(system_prompt: str) -> str:
+    return system_prompt + "\n\n" + IMPRECISE_SECOND_PASS_INSTRUCTION
+
+
+def _fallback_clarification_plan(plan: Any) -> Any:
+    return type(plan)(
+        kind="clarification",
+        message=IMPRECISE_FALLBACK_QUESTION,
+        title=None,
+        description=None,
+    )
+
+
+async def _resolve_imprecise_plan(
+    *,
+    planner: AlicePlanner,
+    text: str,
+    system_prompt: str,
+    planned: Any,
+) -> Any:
+    if planned.kind != "imprecise":
+        return planned
+
+    second_pass = await planner.plan(text, system_prompt=_build_imprecise_second_pass_prompt(system_prompt))
+    if second_pass.kind == "clarification":
+        return second_pass
+
+    return _fallback_clarification_plan(planned)
 
 
 async def _get_or_create_session(db: AsyncSession, *, event_id: int, staff_id: int) -> AgentSession:
@@ -56,6 +96,62 @@ async def _load_event_context(db: AsyncSession, *, event_id: int) -> tuple[Event
     free_staff_count = len(list(free_count_result.scalars().all()))
 
     return event, list(roles_result.scalars().all()), list(zones_result.scalars().all()), free_staff_count
+
+
+async def _load_admin_staff_names(db: AsyncSession, *, event_id: int) -> list[str]:
+    result = await db.execute(
+        select(Staff)
+        .where(Staff.event_id == event_id, Staff.is_admin.is_(True))
+        .order_by(Staff.name.asc())
+        .limit(20)
+    )
+    admins = list(result.scalars().all())
+    return [f"- {admin.name}" for admin in admins]
+
+
+async def _load_kb_context(db: AsyncSession, *, event_id: int) -> list[str]:
+    """Best-effort KB snapshot from recent admin messages (no dedicated KB table in PoC)."""
+    result = await db.execute(
+        select(Message, Staff)
+        .join(Staff, Staff.id == Message.from_staff_id)
+        .where(
+            Message.event_id == event_id,
+            Staff.event_id == event_id,
+            Staff.is_admin.is_(True),
+            Message.visibility != Visibility.confidential,
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(6)
+    )
+    rows = list(result.all())
+    lines: list[str] = []
+    for message, author in rows:
+        content = _sanitize_line(message.content)
+        if not content:
+            continue
+        lines.append(f"- [{author.name}] {content}")
+    return lines
+
+
+async def _load_incident_summary(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    visible_clause: Any,
+) -> list[str]:
+    result = await db.execute(
+        select(Ticket)
+        .where(Ticket.event_id == event_id)
+        .where(visible_clause)
+        .where(Ticket.visibility != Visibility.confidential)
+        .order_by(Ticket.updated_at.desc(), Ticket.id.desc())
+        .limit(8)
+    )
+    tickets = list(result.scalars().all())
+    lines: list[str] = []
+    for ticket in tickets:
+        lines.append(f"- #{ticket.id} {ticket.title} [{ticket.status.value}]")
+    return lines
 
 
 async def _can_see_confidential(db: AsyncSession, staff: Staff) -> bool:
@@ -98,6 +194,15 @@ def _serialize_ticket(ticket: Ticket | None) -> TicketSchema | None:
     return TicketSchema.model_validate(ticket)
 
 
+def _extract_completion_query(text: str) -> str | None:
+    cleaned = text.strip().lower()
+    if not cleaned.startswith("я сделал"):
+        return None
+    tail = cleaned[len("я сделал") :].strip(" .,!?")
+    tail = re.sub(r"^задачу\s*", "", tail)
+    return tail or ""
+
+
 async def handle_command(
     *,
     db: AsyncSession,
@@ -106,29 +211,93 @@ async def handle_command(
     text: str,
 ) -> AgentCommandResponse:
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
+    context = list(session.context or [])
+    context.append({"role": "user", "text": text})
+
     tools = AgentTools(db=db, event_id=event_id, current_staff=current_staff)
     planner = AlicePlanner()
 
     event, roles, zones, free_staff_count = await _load_event_context(db, event_id=event_id)
+    visible_clause = await _ticket_visibility_clause(db, current_staff)
+    admin_staff = await _load_admin_staff_names(db, event_id=event_id)
+    kb_context = await _load_kb_context(db, event_id=event_id)
+    incident_summary = await _load_incident_summary(
+        db,
+        event_id=event_id,
+        visible_clause=visible_clause,
+    )
+
     system_prompt = build_system_prompt(
         event_name=event.name,
         event_description=event.description,
         roles=roles,
         zones=zones,
         free_staff_count=free_staff_count,
+        admin_staff=admin_staff,
+        kb_context=kb_context,
+        incident_summary=incident_summary,
+        recent_dialogue=_trim_context(context[:-1]),
     )
 
-    context = list(session.context or [])
-    context.append({"role": "user", "text": text})
+    completion_query = _extract_completion_query(text)
+    if completion_query is not None:
+        tickets_result = await db.execute(
+            select(Ticket)
+            .where(Ticket.event_id == event_id)
+            .where(visible_clause)
+            .where(Ticket.status.not_in([TicketStatus.resolved, TicketStatus.closed]))
+            .order_by(Ticket.updated_at.desc())
+            .limit(20)
+        )
+        candidates = list(tickets_result.scalars().all())
+
+        target_ticket: Ticket | None = None
+        if completion_query == "":
+            target_ticket = candidates[0] if candidates else None
+        else:
+            for ticket in candidates:
+                title = (ticket.title or "").lower()
+                if completion_query in title:
+                    target_ticket = ticket
+                    break
+
+        if target_ticket is None:
+            response = AgentCommandResponse(
+                action="question_asked",
+                message="Не понял, какую именно задачу отметить выполненной. Напиши название задачи.",
+            )
+        else:
+            target_ticket.status = TicketStatus.resolved
+            await db.flush()
+            target_ticket_for_response = await _load_ticket_for_response(
+                db,
+                event_id=event_id,
+                ticket_id=target_ticket.id,
+            )
+            response = AgentCommandResponse(
+                action="answered",
+                message=f"Отметил задачу #{target_ticket.id} «{target_ticket.title}» как выполненную.",
+                ticket=_serialize_ticket(target_ticket_for_response),
+            )
+
+        context.append({"role": "assistant", "text": response.message})
+        session.context = _trim_context(context)
+        await db.commit()
+        return response
 
     planned = await planner.plan(text, system_prompt=system_prompt)
+    planned = await _resolve_imprecise_plan(
+        planner=planner,
+        text=text,
+        system_prompt=system_prompt,
+        planned=planned,
+    )
 
     if planned.kind == "clarification":
         response = AgentCommandResponse(action="question_asked", message=planned.message)
     elif planned.kind == "answered":
         response = AgentCommandResponse(action="answered", message=planned.message)
     elif planned.kind == "informational":
-        visible_clause = await _ticket_visibility_clause(db, current_staff)
         ticket_result = await db.execute(
             select(Ticket)
             .where(Ticket.event_id == event_id)

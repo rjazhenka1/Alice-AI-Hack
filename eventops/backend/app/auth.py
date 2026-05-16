@@ -42,7 +42,10 @@ async def get_current_staff(
     token = credentials.credentials
     try:
         payload = jwt.decode(token, _secret_key(), algorithms=[ALGORITHM])
-        staff_id = int(payload.get("sub"))
+        subject = payload.get("sub")
+        if subject is None:
+            raise ValueError("Token subject is missing")
+        staff_id = int(subject)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 

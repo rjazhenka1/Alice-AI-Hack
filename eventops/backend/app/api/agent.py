@@ -7,20 +7,20 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..agent.alice import audio_not_supported_message
-from ..agent.router import confirm_ticket, handle_command
-from ..models import Staff
-from ..schemas import AgentCommandRequest, AgentCommandResponse, AgentConfirmRequest, Ticket
+from agent.alice import audio_not_supported_message
+from agent.router import confirm_ticket, handle_command
+from models import Staff
+from schemas import AgentCommandRequest, AgentCommandResponse, AgentConfirmRequest, Ticket
 
 try:
-    from ..auth import get_current_staff
+    from auth import get_current_staff
 except Exception:  # pragma: no cover - fallback for partial PoC environments
     async def get_current_staff() -> Staff:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Auth is not configured")
 
 
 try:
-    from ..database import get_db
+    from database import get_db
 except Exception:  # pragma: no cover - fallback for partial PoC environments
     async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database is not configured")
