@@ -34,6 +34,8 @@ class SpeechKitClient:
         self.timeout_seconds = 30
         self.stt_url = os.getenv("SPEECHKIT_STT_URL", "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize")
         self.tts_url = os.getenv("SPEECHKIT_TTS_URL", "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize")
+        self.tts_voice = os.getenv("SPEECHKIT_TTS_VOICE", "alena")
+        self.tts_lang = os.getenv("SPEECHKIT_TTS_LANG", "ru-RU")
 
     def _headers(self, *, content_type: str | None = None) -> dict[str, str]:
         if not self.api_key:
@@ -89,25 +91,38 @@ class SpeechKitClient:
         return text
 
     async def synthesize_text_base64(self, *, text: str, voice: str = "alena") -> str:
-        start = time.perf_counter()
-        data = {
+        normalized = (text or "").strip()
+        if not normalized:
+            raise RuntimeError("SpeechKit TTS text is empty")
+
+        payload = {
             "folderId": self._folder_id(),
-            "text": text,
-            "lang": "ru-RU",
-            "voice": voice,
+            "text": normalized,
+            "lang": self.tts_lang,
+            "voice": voice or self.tts_voice,
             "format": "oggopus",
         }
+
+        start = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(self.tts_url, headers=self._headers(), data=data)
+                response = await client.post(
+                    self.tts_url,
+                    headers=self._headers(),
+                    data=payload,
+                )
                 response.raise_for_status()
+                audio_bytes = response.content
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("speechkit_tts_ok latency_ms=%.1f voice=%s", elapsed_ms, voice)
-            return base64.b64encode(response.content).decode("ascii")
+            logger.info("speechkit_tts_ok latency_ms=%.1f voice=%s", elapsed_ms, payload["voice"])
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.warning("speechkit_tts_failed latency_ms=%.1f voice=%s error=%s", elapsed_ms, voice, exc)
+            logger.warning("speechkit_tts_failed latency_ms=%.1f voice=%s error=%s", elapsed_ms, payload["voice"], exc)
             raise RuntimeError("SpeechKit TTS request failed") from exc
+
+        if not audio_bytes:
+            raise RuntimeError("SpeechKit TTS returned empty audio")
+        return base64.b64encode(audio_bytes).decode("ascii")
 
 
 class AlicePlanner:

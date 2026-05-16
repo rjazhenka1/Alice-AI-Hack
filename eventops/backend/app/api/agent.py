@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -39,20 +38,6 @@ except Exception:  # pragma: no cover - fallback for partial PoC environments
 router = APIRouter(prefix="/events/{event_id}/agent", tags=["agent"])
 
 
-async def _maybe_add_audio_response(response: AgentCommandResponse, speechkit: SpeechKitClient) -> AgentCommandResponse:
-    if os.getenv("ALICE_ENABLE_TTS_RESPONSES", "").lower() not in {"1", "true", "yes"}:
-        return response
-
-    try:
-        response.audio = AudioSynthesis(
-            status="ok",
-            audio_base64=await speechkit.synthesize_text_base64(text=response.message),
-        )
-    except Exception as exc:
-        response.audio = AudioSynthesis(status="error", detail=str(exc))
-    return response
-
-
 @router.post("/command", response_model=AgentCommandResponse)
 async def agent_command(
     event_id: int,
@@ -64,10 +49,14 @@ async def agent_command(
     text = (payload.text or "").strip()
     has_text = bool(text)
     has_audio = bool((payload.audio_base64 or "").strip())
+    had_both_sources = has_text and has_audio
 
     if has_audio and not has_text:
         try:
             text = await speechkit.transcribe_audio_base64(audio_base64=payload.audio_base64 or "")
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+            has_text = bool(text)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -76,12 +65,24 @@ async def agent_command(
     if not has_text and not has_audio:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Either text or audio_base64 is required")
 
-    if has_text and has_audio:
+    if had_both_sources:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Provide only one command source: text or audio_base64")
 
     try:
         response = await handle_command(db=db, event_id=event_id, current_staff=current_staff, text=text)
-        return await _maybe_add_audio_response(response, speechkit)
+        try:
+            response.audio = AudioSynthesis(
+                audio_base64=await speechkit.synthesize_text_base64(text=response.message),
+                format="oggopus",
+                status="ok",
+            )
+        except RuntimeError as exc:
+            response.audio = AudioSynthesis(
+                format="oggopus",
+                status="error",
+                detail=str(exc),
+            )
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RuntimeError as exc:
