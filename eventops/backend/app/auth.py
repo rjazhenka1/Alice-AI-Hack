@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -11,8 +12,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_db
-from models import Staff
+from .database import get_db
+from .models import Staff
 
 
 ALGORITHM = "HS256"
@@ -22,8 +23,6 @@ security = HTTPBearer(auto_error=True)
 
 
 def _secret_key() -> str:
-    import os
-
     return os.getenv("SECRET_KEY", "dev-secret-key-change-me")
 
 

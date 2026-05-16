@@ -47,7 +47,7 @@
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 async, Alembic |
 | БД | PostgreSQL (asyncpg). На локале можно SQLite через aiosqlite |
 | AI | Alice AI REST API (YandexGPT), httpx для вызовов |
-| Уведомления | python-telegram-bot v20 |
+| Уведомления | httpx → Telegram Bot API |
 | Деплой | docker-compose |
 
 Примечание по SDK: для интеграции с AI Studio и SpeechKit допустимо использовать `yandex-ai-studio-sdk` (актуальная ветка релизов `0.20.x`, рекомендуется pin `>=0.20.0,<0.21.0` для стабильности хакатона).
@@ -112,6 +112,8 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/eventops
 ALICE_API_KEY=<ключ от Yandex AI Studio>
 ALICE_FOLDER_ID=<folder id Yandex Cloud>
 TELEGRAM_BOT_TOKEN=<токен бота>
+TELEGRAM_WEBHOOK_SECRET=<опциональный секрет для Telegram webhook-запросов>
+TELEGRAM_VOICE_DIR=storage/telegram_voice
 SECRET_KEY=<случайная строка для JWT>
 ```
 
@@ -172,6 +174,11 @@ PATCH  /events/{id}/tickets/{tid}/assignments/{aid}  body: ConfirmAssignmentRequ
 GET    /events/{id}/messages            → Message[]  (фильтруется по visibility)
 POST   /events/{id}/messages            body: MessageCreate → Message
 PATCH  /events/{id}/messages/{mid}/read → Message
+```
+
+### Telegram integration
+```
+POST   /integrations/telegram/webhook
 ```
 
 ### Agent (Алиса)
@@ -292,6 +299,12 @@ AgentCommandResponse(action, message, suggestion, ticket)
 ```
 
 Воркер в фоне читает очередь и шлёт через Telegram Bot API.
+Входящие сообщения принимаются через webhook-эндпоинт `/integrations/telegram/webhook`;
+текстовые сообщения сохраняются как `Message.content`, голосовые скачиваются через
+Telegram `getFile` в `TELEGRAM_VOICE_DIR`, а в `Message.content` сохраняется ссылка
+на локальный файл и базовые метаданные.
+если задан `TELEGRAM_WEBHOOK_SECRET`,
+клиент должен передавать его в заголовке `X-EventOps-Secret`.
 Если Telegram недоступен — логируй ошибку, не падай.
 
 ---

@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import Select, and_, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import (
+from ..models import (
     Role,
     Staff,
     StaffStatus,
@@ -130,7 +130,7 @@ class AgentTools:
 
     async def send_notification(self, *, telegram_id: str, message: str) -> None:
         try:
-            from notifier import enqueue_notification  # type: ignore
+            from ..notifier import enqueue_notification
 
             await enqueue_notification({"telegram_id": telegram_id, "message": message})
             return
