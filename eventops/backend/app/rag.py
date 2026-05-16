@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import string
 from typing import Any
 
@@ -17,6 +18,7 @@ CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 160
 MIN_PRINTABLE_RATIO = 0.85
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/tiff", "image/bmp"}
+MIN_KEYWORD_LENGTH = 4
 
 
 def _infer_content_type(
@@ -92,6 +94,69 @@ def vector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"
 
 
+def _query_keywords(query: str) -> list[str]:
+    words = re.findall(r"[\wА-Яа-яЁё]+", (query or "").lower())
+    seen: set[str] = set()
+    result: list[str] = []
+    for word in words:
+        if len(word) < MIN_KEYWORD_LENGTH or word in seen:
+            continue
+        seen.add(word)
+        result.append(word)
+    return result[:8]
+
+
+def _chunk_to_result(chunk: DocumentChunk, *, score: float | None = None) -> dict[str, Any]:
+    return {
+        "id": chunk.id,
+        "event_id": chunk.event_id,
+        "knowledge_base_link_id": chunk.knowledge_base_link_id,
+        "ticket_id": chunk.ticket_id,
+        "content": chunk.content,
+        "source_title": chunk.source_title,
+        "source_url": chunk.source_url,
+        "chunk_index": chunk.chunk_index,
+        "score": score,
+    }
+
+
+async def _keyword_search_document_chunks(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    keywords = _query_keywords(query)
+    if not keywords:
+        return []
+
+    score_parts = [
+        f"CASE WHEN lower(content) LIKE :keyword_{index} THEN 1 ELSE 0 END"
+        for index, _ in enumerate(keywords)
+    ]
+    params: dict[str, Any] = {"event_id": event_id, "limit": limit}
+    for index, keyword in enumerate(keywords):
+        params[f"keyword_{index}"] = f"%{keyword}%"
+
+    result = await db.execute(
+        text(
+            f"""
+            SELECT id, event_id, knowledge_base_link_id, ticket_id, content,
+                   source_title, source_url, chunk_index,
+                   ({' + '.join(score_parts)})::float AS score
+            FROM document_chunks
+            WHERE event_id = :event_id
+              AND ({' OR '.join(f'lower(content) LIKE :keyword_{index}' for index, _ in enumerate(keywords))})
+            ORDER BY score DESC, id DESC
+            LIMIT :limit
+            """
+        ),
+        params,
+    )
+    return [dict(row._mapping) for row in result.all()]
+
+
 async def index_document_chunks(
     db: AsyncSession,
     *,
@@ -158,6 +223,17 @@ async def search_document_chunks(
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     is_postgres = db.bind is not None and db.bind.dialect.name == "postgresql"
+    results: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+
+    if is_postgres:
+        try:
+            for row in await _keyword_search_document_chunks(db, event_id=event_id, query=query, limit=limit):
+                seen_ids.add(int(row["id"]))
+                results.append(row)
+        except Exception:
+            logger.exception("Keyword RAG search failed")
+
     if is_postgres:
         try:
             embedding = await YandexEmbeddingClient().embed(query, model="text-search-query")
@@ -175,7 +251,17 @@ async def search_document_chunks(
                 ),
                 {"event_id": event_id, "embedding": vector_literal(embedding), "limit": limit},
             )
-            return [dict(row._mapping) for row in result.all()]
+            for row in result.all():
+                item = dict(row._mapping)
+                item_id = int(item["id"])
+                if item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                results.append(item)
+                if len(results) >= limit:
+                    break
+            if results:
+                return results[:limit]
         except Exception:
             logger.exception("Vector RAG search failed; falling back to text search")
 
@@ -185,17 +271,4 @@ async def search_document_chunks(
         .order_by(DocumentChunk.id.desc())
         .limit(limit)
     )
-    return [
-        {
-            "id": chunk.id,
-            "event_id": chunk.event_id,
-            "knowledge_base_link_id": chunk.knowledge_base_link_id,
-            "ticket_id": chunk.ticket_id,
-            "content": chunk.content,
-            "source_title": chunk.source_title,
-            "source_url": chunk.source_url,
-            "chunk_index": chunk.chunk_index,
-            "score": None,
-        }
-        for chunk in result.scalars().all()
-    ]
+    return [_chunk_to_result(chunk) for chunk in result.scalars().all()]
