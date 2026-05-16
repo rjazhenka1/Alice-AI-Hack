@@ -49,6 +49,8 @@ async def setup_alice_env():
             return PlannedCommand(kind="informational", message="Собираю сводку")
         if "компьютерное зрение" in lowered:
             return PlannedCommand(kind="knowledge_base", message="Ищу в базе знаний", keywords=["Компьютерное зрение"])
+        if "анну" in lowered:
+            return PlannedCommand(kind="operational", message="Ок", title="Поставить на вход", description=text, assignees=["Анну"])
         if "ну ты поняла" in lowered:
             return PlannedCommand(kind="answered", message="Не понял задачу")
         if "нужны люди" in lowered:
@@ -299,3 +301,19 @@ async def test_ticket_summary_query_uses_tickets_not_knowledge(db_session: Async
     assert "Актуальные задачи" in response.message
     assert "Доставка удлинителей" in response.message
     assert "базе знаний" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_assignee_resolution_matches_cyrillic_first_name_to_latin_staff(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Поставь Анну на вход"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert response.ticket.target["staff_ids"] == [2]
