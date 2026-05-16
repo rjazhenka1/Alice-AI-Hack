@@ -82,7 +82,7 @@ def build_system_prompt(
 
 === КОНТРАКТ ВЫХОДА (СТРОГО ОДИН JSON, БЕЗ ТЕКСТА ВОКРУГ) ===
 {{
-  "kind": "operational | clarification | informational | answered",
+  "kind": "operational | clarification | informational | knowledge_base | answered",
   "target": "create | respond | change_status | null",
   "title": "string | null",
   "description": "string | null",
@@ -123,14 +123,22 @@ def build_system_prompt(
    - text = ровно один конкретный уточняющий вопрос.
 
 3) kind=informational
-   - Вопрос по знаниям/контексту мероприятия.
+   - Вопрос по текущему операционному состоянию мероприятия из БД: задачи, тикеты, статусы,
+     актуальные инциденты, кто чем занят.
+   - НЕ используй knowledge-RAG и НЕ ищи в базе знаний документов.
+   - target = null.
+   - keywords/answer = null.
+   - title/description/assignees/id/status = null.
+
+4) kind=knowledge_base
+   - Вопрос по базе знаний, документам, инструкциям, OCR/PDF/загруженным материалам.
    - target = null.
    - keywords = массив ключевых слов для RAG-запроса.
    - answer = финальный структурированный ответ по данным из контекста/RAG.
    - Если данных в админке/контексте нет: НЕ выдумывай, переходи в clarification или answered.
    - title/description/assignees/id/status = null.
 
-4) kind=answered
+5) kind=answered
    - Непонятный, бессодержательный или unsafe-запрос.
    - Без side effects.
    - Все специальные поля = null.
@@ -146,13 +154,17 @@ def build_system_prompt(
   - иначе clarification.
 
 === RAG-ОРКЕСТРАЦИЯ (ПСЕВДОКОД, API НЕИЗВЕСТЕН) ===
-- Для informational (ТОЛЬКО KB-RAG):
+- Для knowledge_base (ТОЛЬКО KB-RAG):
   1. Сгенерировать keywords (JSON-массив).
   2. Вызвать только knowledge-RAG по keywords (псевдокод): `rag.search_docs(keywords)`.
   3. Передать исходный вопрос + найденные фрагменты во второй prompt для synthesis.
   4. Сформировать answer, ссылаясь только на найденные материалы.
 
-- Для НЕ informational (operational/respond/change_status/clarification при разборе сущностей):
+- Для informational:
+  1. Не вызывать KB-RAG.
+  2. Использовать видимую сводку тикетов/статусов из контекста.
+
+- Для НЕ informational и НЕ knowledge_base (operational/respond/change_status/clarification при разборе сущностей):
   1. Использовать RAG по людям: `rag.search_people(...)`.
   2. Использовать RAG по ролям (с описаниями ролей): `rag.search_roles(...)`.
   3. При необходимости использовать KB-RAG как контекст: `rag.search_docs(...)`.
@@ -198,17 +210,22 @@ def build_system_prompt(
 Выход:
 {{"kind":"operational","target":"respond","title":null,"description":null,"assignees":null,"id":null,"status":null,"keywords":null,"answer":null,"text":"Нужно уточнить конкретную Анну Иванову или получить список задач после сопоставления сущности."}}
 
-Пример 5 (informational с keywords):
+Пример 5 (knowledge_base с keywords):
 Вход: "Где туалет рядом с 331?"
 Выход:
-{{"kind":"informational","target":null,"title":null,"description":null,"assignees":null,"id":null,"status":null,"keywords":["туалет","331 кабинет","навигация"],"answer":"Требуется получить фрагменты из базы знаний и затем сформировать точный ответ.","text":"Подготовил ключевые слова для поиска в знаниях мероприятия."}}
+{{"kind":"knowledge_base","target":null,"title":null,"description":null,"assignees":null,"id":null,"status":null,"keywords":["туалет","331 кабинет","навигация"],"answer":"Требуется получить фрагменты из базы знаний и затем сформировать точный ответ.","text":"Подготовил ключевые слова для поиска в знаниях мероприятия."}}
 
-Пример 6 (clarification):
+Пример 6 (informational по тикетам):
+Вход: "Какие актуальные задачи сейчас?"
+Выход:
+{{"kind":"informational","target":null,"title":null,"description":null,"assignees":null,"id":null,"status":null,"keywords":null,"answer":null,"text":"Покажи текущие актуальные задачи из видимых тикетов."}}
+
+Пример 7 (clarification):
 Вход: "Сделай это как-нибудь"
 Выход:
 {{"kind":"clarification","target":null,"title":null,"description":null,"assignees":null,"id":null,"status":null,"keywords":null,"answer":null,"text":"Уточни, пожалуйста, что именно нужно сделать, где и в какой срок?"}}
 
-Пример 7 (answered):
+Пример 8 (answered):
 Вход: "Ну ты поняла"
 Выход:
 {{"kind":"answered","target":null,"title":null,"description":null,"assignees":null,"id":null,"status":null,"keywords":null,"answer":null,"text":"Не понял задачу. Опиши, что случилось, где и какой результат нужен."}}
@@ -251,9 +268,9 @@ input = "Ваня Медведев", rag="Иван Морозов", id=8 confide
 
 
 def build_rag_informational_synthesis_prompt() -> str:
-    """Prompt for final informational answer synthesis from retrieved RAG fragments."""
+    """Prompt for final knowledge-base answer synthesis from retrieved RAG fragments."""
     return """
-Ты формируешь финальный informational-ответ по вопросу координатора.
+Ты формируешь финальный knowledge_base-ответ по вопросу координатора.
 
 Вход:
 - user_question
@@ -261,7 +278,7 @@ def build_rag_informational_synthesis_prompt() -> str:
 
 Сделай структурированный JSON:
 {
-  "kind": "informational",
+  "kind": "knowledge_base",
   "answer": "краткий точный ответ",
   "text": "человекочитаемое резюме, что найдено"
 }
@@ -278,7 +295,7 @@ user_question: "Где туалет рядом с 331?"
 rag_fragments:
 - "Туалет для участников находится рядом с кабинетом 331, правое крыло. Источник: admin://map/floor-3"
 Ответ:
-{"kind":"informational","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3).","text":"Нашёл подтверждённый фрагмент в базе знаний и вернул точную локацию."}
+{"kind":"knowledge_base","answer":"Туалет находится рядом с кабинетом 331, в правом крыле (источник: admin://map/floor-3).","text":"Нашёл подтверждённый фрагмент в базе знаний и вернул точную локацию."}
 """.strip()
 
 

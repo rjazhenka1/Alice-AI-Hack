@@ -6,7 +6,7 @@ import re
 import string
 from typing import Any
 
-from sqlalchemy import insert, select, text
+from sqlalchemy import insert, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .agent.alice import VisionOCRClient, YandexEmbeddingClient
@@ -265,9 +265,15 @@ async def search_document_chunks(
         except Exception:
             logger.exception("Vector RAG search failed; falling back to text search")
 
+    keywords = _query_keywords(query)
+    content_filter = (
+        or_(*(DocumentChunk.content.ilike(f"%{keyword}%") for keyword in keywords))
+        if keywords
+        else DocumentChunk.content.ilike(f"%{query}%")
+    )
     result = await db.execute(
         select(DocumentChunk)
-        .where(DocumentChunk.event_id == event_id, DocumentChunk.content.ilike(f"%{query}%"))
+        .where(DocumentChunk.event_id == event_id, content_filter)
         .order_by(DocumentChunk.id.desc())
         .limit(limit)
     )

@@ -13,6 +13,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_URL = "https://api.telegram.org"
+TELEGRAM_MESSAGE_LIMIT = 4096
+TELEGRAM_SAFE_CHUNK_SIZE = 3900
 
 
 @dataclass(slots=True)
@@ -60,39 +62,57 @@ async def send_telegram(
     message: str,
     disable_notification: bool = False,
 ) -> None:
-    logger.info("Sending Telegram message: telegram_id=%s", telegram_id)
-    response = await client.post(
-        f"{TELEGRAM_API_URL}/bot{token}/sendMessage",
-        json={
-            "chat_id": telegram_id,
-            "text": message,
-            "disable_notification": disable_notification,
-        },
-    )
-    if response.is_error:
-        logger.error(
-            "Telegram API HTTP error: telegram_id=%s status_code=%s response=%s",
-            telegram_id,
-            response.status_code,
-            response.text,
+    chunks = _split_telegram_message(message)
+    for chunk in chunks:
+        logger.info("Sending Telegram message: telegram_id=%s length=%s", telegram_id, len(chunk))
+        response = await client.post(
+            f"{TELEGRAM_API_URL}/bot{token}/sendMessage",
+            json={
+                "chat_id": telegram_id,
+                "text": chunk,
+                "disable_notification": disable_notification,
+            },
         )
-        response.raise_for_status()
+        if response.is_error:
+            logger.error(
+                "Telegram API HTTP error: telegram_id=%s status_code=%s response=%s",
+                telegram_id,
+                response.status_code,
+                response.text,
+            )
+            response.raise_for_status()
 
-    body = response.json()
-    if body.get("ok") is not True:
-        logger.error(
-            "Telegram API rejected message: telegram_id=%s response=%s",
+        body = response.json()
+        if body.get("ok") is not True:
+            logger.error(
+                "Telegram API rejected message: telegram_id=%s response=%s",
+                telegram_id,
+                body,
+            )
+            raise RuntimeError(body)
+
+        result = body.get("result") or {}
+        logger.info(
+            "Telegram message sent: telegram_id=%s message_id=%s",
             telegram_id,
-            body,
+            result.get("message_id"),
         )
-        raise RuntimeError(body)
 
-    result = body.get("result") or {}
-    logger.info(
-        "Telegram message sent: telegram_id=%s message_id=%s",
-        telegram_id,
-        result.get("message_id"),
-    )
+
+def _split_telegram_message(message: str) -> list[str]:
+    if len(message) <= TELEGRAM_MESSAGE_LIMIT:
+        return [message]
+
+    chunks: list[str] = []
+    remaining = message
+    while remaining:
+        chunk = remaining[:TELEGRAM_SAFE_CHUNK_SIZE]
+        split_at = max(chunk.rfind("\n"), chunk.rfind(". "))
+        if split_at > TELEGRAM_SAFE_CHUNK_SIZE // 2:
+            chunk = remaining[: split_at + 1]
+        chunks.append(chunk.strip())
+        remaining = remaining[len(chunk) :].strip()
+    return chunks
 
 
 async def notification_worker(stop_event: asyncio.Event | None = None) -> None:

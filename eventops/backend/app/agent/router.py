@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from .alice import AlicePlanner
 from .prompts import build_system_prompt
 from .tools import AgentTools
+from ..rag import search_document_chunks
 from ..models import (
     AgentSession,
     ConfidentialityRule,
@@ -36,6 +37,9 @@ from ..schemas import (
 
 
 MAX_SESSION_MESSAGES = 20
+KB_SNIPPET_MAX_CHARS = 1400
+KB_ANSWER_MAX_CHARS = 3200
+KB_ANSWER_EXCERPT_CHARS = 420
 IMPRECISE_SECOND_PASS_INSTRUCTION = (
     "Если запрос расплывчатый, верни kind=clarification и ровно один конкретный уточняющий вопрос. "
     "Не предлагай действий и не создавай задачу."
@@ -49,6 +53,138 @@ def _trim_context(context: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _sanitize_line(text: str, *, max_len: int = 220) -> str:
     return " ".join((text or "").split())[:max_len]
+
+
+def _format_kb_chunk_line(chunk: dict[str, Any]) -> str:
+    content = _sanitize_line(str(chunk.get("content") or ""), max_len=KB_SNIPPET_MAX_CHARS)
+    source_title = str(chunk.get("source_title") or "Источник")
+    source_url = str(chunk.get("source_url") or "no-url")
+    return f"- {source_title}: {content} ({source_url})"
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = re.findall(r"[\wА-Яа-яЁё]+", (query or "").lower())
+    stop_words = {
+        "есть",
+        "базе",
+        "база",
+        "знаний",
+        "знаниях",
+        "дисциплина",
+        "дисциплины",
+        "какой",
+        "какая",
+        "какие",
+        "что",
+        "это",
+        "про",
+        "найди",
+        "расскажи",
+        "информация",
+        "информации",
+    }
+    result: list[str] = []
+    for term in terms:
+        if len(term) < 4 or term in stop_words or term in result:
+            continue
+        result.append(term)
+    return result
+
+
+def _chunk_matches_query(chunk: dict[str, Any], query: str) -> bool:
+    terms = _query_terms(query)
+    if not terms:
+        return True
+
+    content = str(chunk.get("content") or "").lower()
+    title = str(chunk.get("source_title") or "").lower()
+    haystack = f"{title} {content}"
+
+    # For named entities, require at least one exact term hit. Vector-only matches
+    # are useful for recall, but too risky to present as facts to operators.
+    return any(term in haystack for term in terms)
+
+
+def _relevant_excerpt(content: str, query: str, *, max_len: int = KB_ANSWER_EXCERPT_CHARS) -> str:
+    normalized = _sanitize_line(content, max_len=max(len(content), max_len))
+    lowered = normalized.lower()
+    positions = [lowered.find(term) for term in _query_terms(query)]
+    positions = [position for position in positions if position >= 0]
+    if not positions:
+        return _sanitize_line(normalized, max_len=max_len)
+
+    center = min(positions)
+    start = max(0, center - max_len // 3)
+    end = min(len(normalized), start + max_len)
+    excerpt = normalized[start:end].strip()
+    if start > 0:
+        excerpt = "..." + excerpt
+    if end < len(normalized):
+        excerpt += "..."
+    return excerpt
+
+
+def _format_kb_search_answer(chunks: list[dict[str, Any]], query: str) -> str:
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    filtered_chunks = [chunk for chunk in chunks if _chunk_matches_query(chunk, query)]
+    if not filtered_chunks:
+        return "В базе знаний сейчас не нашла точной информации по этому запросу."
+
+    for chunk in filtered_chunks:
+        source_title = str(chunk.get("source_title") or "Источник")
+        source_url = str(chunk.get("source_url") or "no-url")
+        excerpt = _relevant_excerpt(str(chunk.get("content") or ""), query)
+        dedupe_key = (source_title, excerpt)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        lines.append(f"- {source_title}: {excerpt} ({source_url})")
+        if len(lines) >= 3:
+            break
+
+    answer = "Нашла в базе знаний:\n" + "\n".join(lines)
+    if len(answer) <= KB_ANSWER_MAX_CHARS:
+        return answer
+    return answer[:KB_ANSWER_MAX_CHARS].rstrip() + "\n..."
+
+
+def _is_ticket_summary_query(text: str) -> bool:
+    lowered = (text or "").lower()
+    ticket_words = ("задач", "тикет", "инцидент")
+    summary_words = ("актуаль", "сейчас", "текущ", "список", "какие", "что есть", "статус")
+    return any(word in lowered for word in ticket_words) and any(word in lowered for word in summary_words)
+
+
+async def _build_ticket_summary_response(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    visible_clause: Any,
+    response_author: StaffAuthor | None,
+    response_author_role: RoleShort | None,
+) -> AgentCommandResponse:
+    ticket_result = await db.execute(
+        select(Ticket)
+        .where(Ticket.event_id == event_id)
+        .where(visible_clause)
+        .where(Ticket.status.not_in([TicketStatus.resolved, TicketStatus.closed]))
+        .order_by(Ticket.updated_at.desc(), Ticket.id.desc())
+        .limit(8)
+    )
+    tickets = list(ticket_result.scalars().all())
+    if not tickets:
+        message = "Сейчас актуальных задач не найдено."
+    else:
+        lines = [f"- #{ticket.id} {ticket.title} ({ticket.status.value})" for ticket in tickets]
+        message = "Актуальные задачи:\n" + "\n".join(lines)
+    return AgentCommandResponse(
+        action="answered",
+        message=message,
+        model_response=message,
+        author=response_author,
+        author_role=response_author_role,
+    )
 
 
 def _build_imprecise_second_pass_prompt(system_prompt: str) -> str:
@@ -133,7 +269,13 @@ async def _load_kb_context(
     *,
     event_id: int,
     visible_clause: Any,
+    query_text: str | None = None,
 ) -> list[str]:
+    if query_text:
+        chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5)
+        if chunks:
+            return [_format_kb_chunk_line(chunk) for chunk in chunks]
+
     result = await db.execute(
         select(KnowledgeBaseLink)
         .where(
@@ -457,6 +599,19 @@ async def handle_command(
         await db.commit()
         return response
 
+    if _is_ticket_summary_query(text):
+        response = await _build_ticket_summary_response(
+            db,
+            event_id=event_id,
+            visible_clause=visible_clause,
+            response_author=response_author,
+            response_author_role=response_author_role,
+        )
+        context.append({"role": "assistant", "text": response.model_response or response.message})
+        session.context = _trim_context(context)
+        await db.commit()
+        return response
+
     planned = await planner.plan(text, system_prompt=system_prompt)
     planned = await _resolve_imprecise_plan(
         planner=planner,
@@ -482,8 +637,17 @@ async def handle_command(
             author_role=response_author_role,
         )
     elif planned.kind == "informational":
-        keywords = planned.keywords or []
-        if not keywords:
+        response = await _build_ticket_summary_response(
+            db,
+            event_id=event_id,
+            visible_clause=visible_clause,
+            response_author=response_author,
+            response_author_role=response_author_role,
+        )
+    elif planned.kind == "knowledge_base":
+        search_query = " ".join([text, *(planned.keywords or [])]).strip()
+        docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5)
+        if not docs and not planned.keywords:
             response = AgentCommandResponse(
                 action="question_asked",
                 message="Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия.",
@@ -492,13 +656,10 @@ async def handle_command(
                 author_role=response_author_role,
             )
         else:
-            # PSEUDOCODE (informational-only source policy): docs = rag.search_docs(keywords)
-            docs: list[str] = []
             if not docs:
                 info_answer = planned.answer or "В базе знаний сейчас не нашёл подходящих материалов."
             else:
-                # PSEUDOCODE: info_answer = llm_synthesize_info(question=text, docs=docs)
-                info_answer = planned.answer or "Собрал найденные материалы и подготовил ответ."
+                info_answer = planned.answer or _format_kb_search_answer(docs, text)
             response = AgentCommandResponse(
                 action="answered",
                 message=info_answer,
