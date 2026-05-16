@@ -6,9 +6,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 TARGET="eventops/backend/.env.example"
+SOURCE_REF="${SOURCE_REF:-origin/main}"
 
-echo "Restoring $TARGET from HEAD"
-git restore -- "$TARGET"
+echo "Restoring $TARGET from $SOURCE_REF"
+git restore --source="$SOURCE_REF" --staged --worktree -- "$TARGET"
 echo
 git status --short --branch --untracked-files=all
-
