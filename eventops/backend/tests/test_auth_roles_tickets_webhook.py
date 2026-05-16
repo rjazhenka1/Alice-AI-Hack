@@ -6,8 +6,9 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.alice import KnowledgeCaptureDecision
 from app.auth import ALGORITHM
-from app.models import KnowledgeBaseLink, Message, Ticket
+from app.models import DocumentChunk, KnowledgeBaseLink, Message, Ticket
 
 from conftest import auth_headers, seed_event, seed_role, seed_staff
 
@@ -188,6 +189,52 @@ async def test_ticket_replies_use_ticket_visibility_and_sender(
     assert [item["content"] for item in replies_response.json()] == ["Взял, иду к входу"]
 
 
+async def test_admin_reply_to_other_admin_ticket_can_be_promoted_to_knowledge(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+):
+    event = await seed_event(db_session)
+    creator = await seed_staff(db_session, event.id, name="Creator", is_admin=True)
+    responder = await seed_staff(db_session, event.id, name="Responder", is_admin=True)
+    await db_session.commit()
+
+    async def fake_assess(self, *, conversation: str, system_prompt: str):
+        assert "Тикет" in conversation
+        assert "Разговор" in conversation
+        assert "знан" in system_prompt.lower()
+        return KnowledgeCaptureDecision(
+            useful=True,
+            title="Инструкция по бейджам",
+            content="Если закончились бейджи, нужно взять запас на стойке регистрации.",
+            tags=["registration", "badges"],
+            reason="Повторно полезная инструкция",
+        )
+
+    monkeypatch.setattr("app.api.tickets.AlicePlanner.assess_knowledge_candidate", fake_assess)
+
+    ticket_response = await client.post(
+        f"/events/{event.id}/tickets",
+        json={"title": "Закончились бейджи", "description": "Что делать на регистрации?"},
+        headers=auth_headers(creator),
+    )
+    ticket_id = ticket_response.json()["id"]
+
+    reply_response = await client.post(
+        f"/events/{event.id}/tickets/{ticket_id}/replies",
+        json={"content": "Запасные бейджи лежат на стойке регистрации."},
+        headers=auth_headers(responder),
+    )
+
+    assert reply_response.status_code == 201
+    link = await db_session.scalar(select(KnowledgeBaseLink).where(KnowledgeBaseLink.title == "Инструкция по бейджам"))
+    assert link is not None
+    assert link.tags == ["registration", "badges"]
+    chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.knowledge_base_link_id == link.id))
+    assert chunk is not None
+    assert "запас" in chunk.content.lower()
+
+
 async def test_attach_document_to_ticket(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -223,6 +270,9 @@ async def test_attach_document_to_ticket(
     ticket = await db_session.scalar(select(Ticket).where(Ticket.id == ticket_id))
     assert ticket is not None
     assert ticket.documents[0]["title"] == "Схема входа"
+    chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.ticket_id == ticket_id))
+    assert chunk is not None
+    assert "hello" in chunk.content
 
 
 async def test_upload_knowledge_document(
@@ -262,6 +312,18 @@ async def test_upload_knowledge_document(
     link = await db_session.scalar(select(KnowledgeBaseLink).where(KnowledgeBaseLink.id == body["id"]))
     assert link is not None
     assert link.url == body["url"]
+
+    chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.knowledge_base_link_id == link.id))
+    assert chunk is not None
+    assert "pdf" in chunk.content
+
+    search_response = await client.get(
+        f"/events/{event.id}/knowledge/search",
+        params={"q": "pdf"},
+        headers=auth_headers(admin),
+    )
+    assert search_response.status_code == 200
+    assert search_response.json()[0]["source_title"] == "Регламент"
 
 
 async def test_telegram_webhook_text_saves_message_and_queues_reply(
@@ -365,3 +427,115 @@ async def test_telegram_webhook_voice_transcribes_and_answers(
             "message": "Твоя текущая задача: быть на регистрации.",
         }
     ]
+
+
+async def test_telegram_document_can_attach_to_ticket(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    event = await seed_event(db_session)
+    staff = await seed_staff(db_session, event.id, name="Telegram User", telegram_id="779", is_admin=True)
+    await db_session.commit()
+    ticket_response = await client.post(
+        f"/events/{event.id}/tickets",
+        json={"title": "Проверить вход"},
+        headers=auth_headers(staff),
+    )
+    ticket_id = ticket_response.json()["id"]
+    queued_notifications: list[dict[str, str]] = []
+
+    async def fake_get_file_path(client, token, file_id):
+        return "documents/report.txt"
+
+    async def fake_download_bytes(client, token, file_path):
+        return b"ticket document body"
+
+    async def fake_enqueue_notification(payload: dict[str, str]) -> None:
+        queued_notifications.append(payload)
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr("app.api.integrations._get_telegram_file_path", fake_get_file_path)
+    monkeypatch.setattr("app.api.integrations._download_telegram_file_bytes", fake_download_bytes)
+    monkeypatch.setattr("app.api.integrations.enqueue_notification", fake_enqueue_notification)
+
+    response = await client.post(
+        "/integrations/telegram/webhook",
+        json={
+            "message": {
+                "message_id": 12,
+                "from": {"id": 779},
+                "chat": {"id": 779},
+                "caption": f"ticket #{ticket_id} Отчёт",
+                "document": {"file_id": "doc-1", "file_name": "report.txt", "mime_type": "text/plain"},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert queued_notifications[0]["message"] == f"Прикрепила документ к задаче #{ticket_id}: Отчёт"
+    db_session.expire_all()
+    ticket = await db_session.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    assert ticket is not None
+    assert ticket.documents[0]["title"] == "Отчёт"
+    chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.ticket_id == ticket_id))
+    assert chunk is not None
+    assert "ticket document body" in chunk.content
+
+
+async def test_telegram_document_can_upload_to_knowledge_and_be_used_by_rag(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    event = await seed_event(db_session)
+    staff = await seed_staff(db_session, event.id, name="Telegram Admin", telegram_id="780", is_admin=True)
+    await db_session.commit()
+    queued_notifications: list[dict[str, str]] = []
+
+    async def fake_get_file_path(client, token, file_id):
+        return "documents/rules.txt"
+
+    async def fake_download_bytes(client, token, file_path):
+        return b"unique registration policy"
+
+    async def fake_enqueue_notification(payload: dict[str, str]) -> None:
+        queued_notifications.append(payload)
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr("app.api.integrations._get_telegram_file_path", fake_get_file_path)
+    monkeypatch.setattr("app.api.integrations._download_telegram_file_bytes", fake_download_bytes)
+    monkeypatch.setattr("app.api.integrations.enqueue_notification", fake_enqueue_notification)
+
+    response = await client.post(
+        "/integrations/telegram/webhook",
+        json={
+            "message": {
+                "message_id": 13,
+                "from": {"id": 780},
+                "chat": {"id": 780},
+                "caption": "kb Регламент регистрации",
+                "document": {"file_id": "doc-2", "file_name": "rules.txt", "mime_type": "text/plain"},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Загрузила документ в базу знаний" in queued_notifications[0]["message"]
+    link = await db_session.scalar(select(KnowledgeBaseLink).where(KnowledgeBaseLink.title == "Регламент регистрации"))
+    assert link is not None
+    chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.knowledge_base_link_id == link.id))
+    assert chunk is not None
+    assert "unique registration policy" in chunk.content
+
+    search_response = await client.get(
+        f"/events/{event.id}/knowledge/search",
+        params={"q": "registration"},
+        headers=auth_headers(staff),
+    )
+    assert search_response.status_code == 200
+    assert search_response.json()[0]["source_title"] == "Регламент регистрации"
