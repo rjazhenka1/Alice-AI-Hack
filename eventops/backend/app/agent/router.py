@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from .alice import AlicePlanner
 from .prompts import build_system_prompt
 from .tools import AgentTools
+from ..rag import search_document_chunks
 from ..models import (
     AgentSession,
     ConfidentialityRule,
@@ -172,7 +173,16 @@ async def _load_kb_context(
     *,
     event_id: int,
     visible_clause: Any,
+    query_text: str | None = None,
 ) -> list[str]:
+    if query_text:
+        chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5)
+        if chunks:
+            return [
+                f"- {chunk['source_title']}: {chunk['content'][:260]} ({chunk.get('source_url') or 'no-url'})"
+                for chunk in chunks
+            ]
+
     result = await db.execute(
         select(KnowledgeBaseLink)
         .where(
@@ -321,7 +331,7 @@ async def handle_command(
     visible_clause = await _ticket_visibility_clause(db, current_staff)
     kb_visible_clause = await _kb_visibility_clause(db, current_staff)
     admin_staff = await _load_admin_staff_names(db, event_id=event_id)
-    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause)
+    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause, query_text=text)
     confidentiality_rules = await _load_confidentiality_rules(db, event_id=event_id)
     incident_summary = await _load_incident_summary(
         db,

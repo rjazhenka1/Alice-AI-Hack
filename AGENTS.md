@@ -211,11 +211,16 @@ PATCH  /events/{id}/messages/{mid}/read → Message
 GET    /events/{id}/knowledge
 POST   /events/{id}/knowledge                 body: KnowledgeBaseLinkCreate → KnowledgeBaseLink
 POST   /events/{id}/knowledge/upload          multipart(file,title?,description?,tags?,visibility?,is_active?) → KnowledgeBaseLink
+GET    /events/{id}/knowledge/search          query: q, limit? → DocumentChunkSearchResult[]
 PATCH  /events/{id}/knowledge/{kid}           body: KnowledgeBaseLinkUpdate → KnowledgeBaseLink
 GET    /events/{id}/confidentiality-rules
 POST   /events/{id}/confidentiality-rules     body: ConfidentialityRuleCreate → ConfidentialityRule
 PATCH  /events/{id}/confidentiality-rules/{rid} body: ConfidentialityRuleUpdate → ConfidentialityRule
 ```
+
+Документы индексируются в `document_chunks`; на PostgreSQL включается `pgvector`,
+колонка `embedding vector(768)` и HNSW-индекс. Для загрузки документов используется
+модель эмбеддингов `text-search-doc`, для поиска — `text-search-query`.
 
 ### Telegram integration
 ```

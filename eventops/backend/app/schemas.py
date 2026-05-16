@@ -284,6 +284,18 @@ class KnowledgeBaseLink(KnowledgeBaseLinkCreate):
     model_config = {"from_attributes": True}
 
 
+class DocumentChunkSearchResult(BaseModel):
+    id: int
+    event_id: int
+    knowledge_base_link_id: Optional[int] = None
+    ticket_id: Optional[int] = None
+    content: str
+    source_title: str
+    source_url: Optional[str] = None
+    chunk_index: int
+    score: Optional[float] = None
+
+
 class ConfidentialityRuleCreate(BaseModel):
     category:    str = Field(..., max_length=255)
     description: str

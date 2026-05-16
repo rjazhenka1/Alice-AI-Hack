@@ -25,6 +25,15 @@ class PlannedCommand:
     description: str | None = None
 
 
+@dataclass(slots=True)
+class KnowledgeCaptureDecision:
+    useful: bool
+    title: str | None = None
+    content: str | None = None
+    tags: list[str] | None = None
+    reason: str | None = None
+
+
 class SpeechKitClient:
     """Yandex SpeechKit STT/TTS client used by agent audio endpoints."""
 
@@ -125,6 +134,52 @@ class SpeechKitClient:
         return base64.b64encode(audio_bytes).decode("ascii")
 
 
+class YandexEmbeddingClient:
+    """Yandex text-search embeddings for RAG document/query vectors."""
+
+    def __init__(self) -> None:
+        self.api_key = os.getenv("ALICE_API_KEY")
+        self.folder_id = os.getenv("ALICE_FOLDER_ID")
+        self.timeout_seconds = 15
+        self.api_url = os.getenv(
+            "YANDEX_EMBEDDING_URL",
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding",
+        )
+
+    async def embed(self, text: str, model: str = "text-search-doc") -> list[float]:
+        normalized = (text or "").strip()
+        if not normalized:
+            raise RuntimeError("Embedding text is empty")
+        if not self.api_key or not self.folder_id:
+            raise RuntimeError("Yandex embeddings are not configured: set ALICE_API_KEY and ALICE_FOLDER_ID")
+
+        payload = {
+            "modelUri": f"emb://{self.folder_id}/{model}",
+            "text": normalized,
+        }
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    self.api_url,
+                    headers={"Authorization": f"Api-Key {self.api_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("yandex_embedding_ok latency_ms=%.1f model=%s", elapsed_ms, model)
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning("yandex_embedding_failed latency_ms=%.1f model=%s error=%s", elapsed_ms, model, exc)
+            raise RuntimeError("Yandex embedding request failed") from exc
+
+        embedding = data.get("embedding")
+        if not isinstance(embedding, list):
+            raise RuntimeError("Yandex embedding response did not include embedding")
+        return [float(value) for value in embedding]
+
+
 class AlicePlanner:
     """
     PoC planner that classifies command into canonical scenarios.
@@ -153,6 +208,52 @@ class AlicePlanner:
         if remote_plan is None:
             raise RuntimeError("Alice API request failed or returned invalid response")
         return remote_plan
+
+    async def assess_knowledge_candidate(
+        self,
+        *,
+        conversation: str,
+        system_prompt: str,
+    ) -> KnowledgeCaptureDecision:
+        if not self.api_key or not self.folder_id:
+            raise RuntimeError("Alice API is not configured: set ALICE_API_KEY and ALICE_FOLDER_ID")
+        if self.model == "poc-rule-based":
+            raise RuntimeError("Alice model is not configured: set ALICE_MODEL to real model id")
+
+        payload = {
+            "modelUri": self._build_model_uri(),
+            "completionOptions": {
+                "stream": False,
+                "temperature": 0.1,
+                "maxTokens": "600",
+            },
+            "messages": [
+                {"role": "system", "text": system_prompt},
+                {"role": "user", "text": conversation},
+            ],
+        }
+        headers: dict[str, str] = {
+            "Authorization": f"Api-Key {self.api_key}",
+            "Content-Type": "application/json",
+            "x-folder-id": self.folder_id,
+        }
+
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("alice_knowledge_capture_ok latency_ms=%.1f model=%s", elapsed_ms, self.model)
+            text_reply = self._extract_text_from_response(data)
+            if not text_reply:
+                return KnowledgeCaptureDecision(useful=False, reason="empty model response")
+            return self._parse_knowledge_decision_json(text_reply)
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.warning("alice_knowledge_capture_failed latency_ms=%.1f model=%s error=%s", elapsed_ms, self.model, exc)
+            return KnowledgeCaptureDecision(useful=False, reason="model request failed")
 
     def _plan_local(self, text: str) -> PlannedCommand:
         normalized = (text or "").strip()
@@ -293,6 +394,33 @@ class AlicePlanner:
             message=message,
             title=str(title) if title is not None else None,
             description=str(description) if description is not None else None,
+        )
+
+    def _parse_knowledge_decision_json(self, raw_text: str) -> KnowledgeCaptureDecision:
+        clean = raw_text.strip()
+        if clean.startswith("```"):
+            clean = clean.strip("`")
+            clean = clean.replace("json", "", 1).strip()
+
+        try:
+            parsed = json.loads(clean)
+        except Exception:
+            return KnowledgeCaptureDecision(useful=False, reason="invalid JSON")
+
+        useful = bool(parsed.get("useful"))
+        title = parsed.get("title")
+        content = parsed.get("content")
+        raw_tags = parsed.get("tags") or []
+        tags = [str(item) for item in raw_tags if isinstance(item, str)] if isinstance(raw_tags, list) else []
+        reason = parsed.get("reason")
+        if useful and not str(content or "").strip():
+            return KnowledgeCaptureDecision(useful=False, reason="empty useful content")
+        return KnowledgeCaptureDecision(
+            useful=useful,
+            title=str(title) if title is not None else None,
+            content=str(content) if content is not None else None,
+            tags=tags,
+            reason=str(reason) if reason is not None else None,
         )
 
     def _build_model_uri(self) -> str:
