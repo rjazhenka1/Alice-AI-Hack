@@ -121,14 +121,15 @@ class AlicePlanner:
             "Верни только JSON без markdown в формате "
             '{"kind":"operational|clarification|informational|imprecise|answered",'
             '"message":"...","title":"...","description":"..."}. '
-            "Если запрос неясный — kind=clarification или kind=answered."
+            "message должен быть конкретным и полезным: 2-4 коротких предложения, "
+            "без confidential-утечек. Если запрос неясный — kind=clarification или kind=answered."
         )
         payload = {
             "modelUri": self._build_model_uri(),
             "completionOptions": {
                 "stream": False,
                 "temperature": 0.2,
-                "maxTokens": "300",
+                "maxTokens": "700",
             },
             "messages": [
                 {"role": "system", "text": (system_prompt or "") + "\n\n" + request_prompt},

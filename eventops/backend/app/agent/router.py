@@ -12,8 +12,21 @@ from sqlalchemy.orm import selectinload
 from .alice import AlicePlanner
 from .prompts import build_system_prompt
 from .tools import AgentTools
-from models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Visibility, Zone
-from schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
+from ..models import (
+    AgentSession,
+    ConfidentialityRule,
+    Event,
+    KnowledgeBaseLink,
+    Role,
+    Staff,
+    StaffStatus,
+    Ticket,
+    TicketAssignment,
+    TicketStatus,
+    Visibility,
+    Zone,
+)
+from ..schemas import AgentCommandResponse, AiSuggestion, Ticket as TicketSchema
 
 
 MAX_SESSION_MESSAGES = 20
@@ -109,28 +122,45 @@ async def _load_admin_staff_names(db: AsyncSession, *, event_id: int) -> list[st
     return [f"- {admin.name}" for admin in admins]
 
 
-async def _load_kb_context(db: AsyncSession, *, event_id: int) -> list[str]:
-    """Best-effort KB snapshot from recent admin messages (no dedicated KB table in PoC)."""
+async def _load_kb_context(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    visible_clause: Any,
+) -> list[str]:
     result = await db.execute(
-        select(Message, Staff)
-        .join(Staff, Staff.id == Message.from_staff_id)
+        select(KnowledgeBaseLink)
         .where(
-            Message.event_id == event_id,
-            Staff.event_id == event_id,
-            Staff.is_admin.is_(True),
-            Message.visibility != Visibility.confidential,
+            KnowledgeBaseLink.event_id == event_id,
+            KnowledgeBaseLink.is_active.is_(True),
         )
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(6)
+        .where(visible_clause)
+        .order_by(KnowledgeBaseLink.id.asc())
+        .limit(10)
     )
-    rows = list(result.all())
+    links = list(result.scalars().all())
     lines: list[str] = []
-    for message, author in rows:
-        content = _sanitize_line(message.content)
-        if not content:
-            continue
-        lines.append(f"- [{author.name}] {content}")
+    for link in links:
+        description = _sanitize_line(link.description or "", max_len=160)
+        tags = ", ".join(link.tags or []) if isinstance(link.tags, list) else ""
+        tail = f" — {description}" if description else ""
+        tags_tail = f" tags: {tags}" if tags else ""
+        lines.append(f"- {link.title}: {link.url}{tail}{tags_tail}")
     return lines
+
+
+async def _load_confidentiality_rules(db: AsyncSession, *, event_id: int) -> list[str]:
+    result = await db.execute(
+        select(ConfidentialityRule)
+        .where(ConfidentialityRule.event_id == event_id, ConfidentialityRule.is_active.is_(True))
+        .order_by(ConfidentialityRule.severity.desc(), ConfidentialityRule.id.asc())
+        .limit(20)
+    )
+    rules = list(result.scalars().all())
+    return [
+        f"- {rule.category} [{rule.severity}]: {_sanitize_line(rule.description, max_len=180)}"
+        for rule in rules
+    ]
 
 
 async def _load_incident_summary(
@@ -179,6 +209,21 @@ async def _ticket_visibility_clause(db: AsyncSession, staff: Staff) -> Any:
     )
 
 
+async def _kb_visibility_clause(db: AsyncSession, staff: Staff) -> Any:
+    if staff.is_admin:
+        return true()
+
+    can_see_confidential = await _can_see_confidential(db, staff)
+    return or_(
+        KnowledgeBaseLink.visibility == Visibility.public,
+        and_(KnowledgeBaseLink.visibility == Visibility.role_only, true() if staff.role_id else false()),
+        and_(
+            KnowledgeBaseLink.visibility == Visibility.confidential,
+            true() if can_see_confidential else false(),
+        ),
+    )
+
+
 async def _load_ticket_for_response(db: AsyncSession, *, event_id: int, ticket_id: int) -> Ticket | None:
     result = await db.execute(
         select(Ticket)
@@ -219,8 +264,10 @@ async def handle_command(
 
     event, roles, zones, free_staff_count = await _load_event_context(db, event_id=event_id)
     visible_clause = await _ticket_visibility_clause(db, current_staff)
+    kb_visible_clause = await _kb_visibility_clause(db, current_staff)
     admin_staff = await _load_admin_staff_names(db, event_id=event_id)
-    kb_context = await _load_kb_context(db, event_id=event_id)
+    kb_context = await _load_kb_context(db, event_id=event_id, visible_clause=kb_visible_clause)
+    confidentiality_rules = await _load_confidentiality_rules(db, event_id=event_id)
     incident_summary = await _load_incident_summary(
         db,
         event_id=event_id,
@@ -235,6 +282,7 @@ async def handle_command(
         free_staff_count=free_staff_count,
         admin_staff=admin_staff,
         kb_context=kb_context,
+        confidentiality_rules=confidentiality_rules,
         incident_summary=incident_summary,
         recent_dialogue=_trim_context(context[:-1]),
     )
@@ -338,7 +386,10 @@ async def handle_command(
 
         response = AgentCommandResponse(
             action="ticket_created",
-            message=f"Создал задачу: {created_ticket.title}",
+            message=(
+                f"Создал задачу #{created_ticket.id}: {created_ticket.title}. "
+                f"{reasoning} После подтверждения отправлю уведомления исполнителям."
+            ),
             suggestion=AiSuggestion(
                 reasoning=reasoning,
                 suggested_staff_ids=suggested_ids,

@@ -195,6 +195,15 @@ PATCH  /events/{id}/messages/{mid}/read → Message
 - Для каждой категории задаётся `description` и `severity` (например: `high|medium|low`).
 - Эти правила используются в prompt/router для запрета утечки в user-facing ответ.
 
+```
+GET    /events/{id}/knowledge
+POST   /events/{id}/knowledge                 body: KnowledgeBaseLinkCreate → KnowledgeBaseLink
+PATCH  /events/{id}/knowledge/{kid}           body: KnowledgeBaseLinkUpdate → KnowledgeBaseLink
+GET    /events/{id}/confidentiality-rules
+POST   /events/{id}/confidentiality-rules     body: ConfidentialityRuleCreate → ConfidentialityRule
+PATCH  /events/{id}/confidentiality-rules/{rid} body: ConfidentialityRuleUpdate → ConfidentialityRule
+```
+
 ### Telegram integration
 ```
 POST   /integrations/telegram/webhook

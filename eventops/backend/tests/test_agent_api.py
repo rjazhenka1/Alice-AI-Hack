@@ -6,10 +6,24 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.agent import agent_command, agent_confirm
-from agent.alice import AlicePlanner, PlannedCommand
-from models import AgentSession, Event, Message, Role, Staff, StaffStatus, Ticket, TicketAssignment, TicketStatus, Zone
-from schemas import AgentCommandRequest, AgentConfirmRequest
+from app.api.agent import agent_command, agent_confirm
+from app.agent.alice import AlicePlanner, PlannedCommand
+from app.models import (
+    AgentSession,
+    ConfidentialityRule,
+    Event,
+    KnowledgeBaseLink,
+    Message,
+    Role,
+    Staff,
+    StaffStatus,
+    Ticket,
+    TicketAssignment,
+    TicketStatus,
+    Visibility,
+    Zone,
+)
+from app.schemas import AgentCommandRequest, AgentConfirmRequest
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -140,3 +154,50 @@ async def test_confirm_assigns_staff_and_updates_status(db_session: AsyncSession
     ticket_result = await db_session.execute(select(Ticket).where(Ticket.id == confirmed.id))
     ticket = ticket_result.scalar_one()
     assert ticket.status == TicketStatus.in_progress
+
+
+@pytest.mark.asyncio
+async def test_agent_prompt_uses_visible_kb_and_confidentiality_rules(db_session: AsyncSession):
+    event_id, _, _ = await _seed_event_with_staff(db_session)
+    role = Role(event_id=event_id, name="Волонтёры", can_see_confidential=False)
+    volunteer = Staff(event_id=event_id, name="Volunteer", role=role, status=StaffStatus.free)
+    db_session.add_all(
+        [
+            role,
+            volunteer,
+            KnowledgeBaseLink(
+                event_id=event_id,
+                title="Публичный регламент",
+                url="admin://knowledge/public-policy",
+                visibility=Visibility.public,
+                is_active=True,
+            ),
+            KnowledgeBaseLink(
+                event_id=event_id,
+                title="Закрытое решение жюри",
+                url="admin://knowledge/jury-private",
+                visibility=Visibility.confidential,
+                is_active=True,
+            ),
+            ConfidentialityRule(
+                event_id=event_id,
+                category="Решения жюри",
+                description="Не раскрывать до публикации",
+                severity="high",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="ну ты поняла"),
+        db=db_session,
+        current_staff=volunteer,
+    )
+
+    prompt = AlicePlanner._last_system_prompt  # type: ignore[attr-defined]
+    assert "Публичный регламент" in prompt
+    assert "Закрытое решение жюри" not in prompt
+    assert "Решения жюри" in prompt
+    assert "Не раскрывать до публикации" in prompt

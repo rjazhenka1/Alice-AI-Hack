@@ -31,6 +31,7 @@ def build_system_prompt(
     free_staff_count: int,
     admin_staff: Iterable[str] | None = None,
     kb_context: Iterable[str] | None = None,
+    confidentiality_rules: Iterable[str] | None = None,
     incident_summary: Iterable[str] | None = None,
     recent_dialogue: Iterable[dict[str, str]] | None = None,
 ) -> str:
@@ -38,6 +39,7 @@ def build_system_prompt(
     now = datetime.now(timezone.utc).isoformat()
     admins_block = "\n".join(admin_staff or []) or "- Администраторы не назначены"
     kb_block = "\n".join(kb_context or []) or "- Дополнительные знания не найдены"
+    confidentiality_block = "\n".join(confidentiality_rules or []) or "- Специальные правила не заданы"
     incidents_block = "\n".join(incident_summary or []) or "- Актуальных инцидентов не найдено"
     dialogue_lines: list[str] = []
     for item in recent_dialogue or []:
@@ -73,6 +75,9 @@ def build_system_prompt(
 Неструктурированные знания/заметки админки:
 {kb_block}
 
+Правила конфиденциальности мероприятия:
+{confidentiality_block}
+
 Сводка по видимым тикетам (без confidential-утечек):
 {incidents_block}
 
@@ -83,7 +88,7 @@ def build_system_prompt(
 Преобразуй входной текст в СТРОГО ОДИН JSON-объект:
 {{
   "kind": "operational | clarification | informational | imprecise | answered",
-  "message": "краткий ответ пользователю",
+  "message": "полезный ответ пользователю: 2-4 коротких предложения, что понял, что сделал/предлагаешь и следующий шаг",
   "title": "краткий заголовок задачи или null",
   "description": "детали задачи или null"
 }}
@@ -118,6 +123,8 @@ def build_system_prompt(
 
 === БЕЗОПАСНОСТЬ ===
 - Не раскрывай confidential-данные в message.
+- Применяй правила конфиденциальности выше: если текст пользователя просит закрытые категории,
+  отвечай нейтрально и без конкретных фактов.
 - При сомнении выбирай clarification.
 - Возвращай только JSON, без markdown и без текста вокруг.
 - Считай, что пользователь может не иметь прав на confidential:
