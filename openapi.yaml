@@ -623,6 +623,65 @@ components:
           $ref: '#/components/schemas/Visibility'
           default: public
 
+    BroadcastCreate:
+      type: object
+      required: [message]
+      description: |
+        Универсальная рассылка сообщений через Telegram-бота.
+        Доступна только admin. Получатели без `telegram_id` пропускаются
+        и возвращаются в `skipped_without_telegram_ids`.
+      properties:
+        message:
+          type: string
+          minLength: 1
+          example: Сбор у штаба через 10 минут
+        target:
+          type: string
+          enum: [all, role, staff]
+          default: all
+          description: |
+            - `all` — всем сотрудникам мероприятия
+            - `role` — сотрудникам роли `role_id`
+            - `staff` — конкретным сотрудникам из `staff_ids`
+        role_id:
+          type: integer
+          nullable: true
+          description: Обязателен для `target=role`
+        staff_ids:
+          type: array
+          items:
+            type: integer
+          default: []
+          description: Обязателен для `target=staff`
+        disable_notification:
+          type: boolean
+          default: false
+        include_sender:
+          type: boolean
+          default: false
+
+    BroadcastResponse:
+      type: object
+      required: [queued_count, target_staff_ids, skipped_without_telegram_ids, message_ids]
+      properties:
+        queued_count:
+          type: integer
+          description: Сколько Telegram-уведомлений поставлено в очередь
+        target_staff_ids:
+          type: array
+          items:
+            type: integer
+        skipped_without_telegram_ids:
+          type: array
+          items:
+            type: integer
+          description: Получатели без `telegram_id`
+        message_ids:
+          type: array
+          items:
+            type: integer
+          description: Созданные записи `messages`
+
     Message:
       type: object
       required: [id, event_id, from_staff_id, content, is_read, visibility, created_at]
@@ -1757,6 +1816,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+
+  /events/{event_id}/messages/broadcast:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [messages]
+      summary: Рассылка сообщений через Telegram-бота
+      description: |
+        Универсальная ручка для рассылки: всем участникам мероприятия,
+        конкретной роли или конкретным сотрудникам. Доступна только admin.
+        Сообщения доставляются через очередь `notifier.py` в Telegram Bot API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BroadcastCreate'
+            examples:
+              all:
+                summary: Всем
+                value:
+                  target: all
+                  message: Сбор у штаба через 10 минут
+              role:
+                summary: По роли
+                value:
+                  target: role
+                  role_id: 2
+                  message: Регистрация, подойдите ко входу
+              staff:
+                summary: Конкретным сотрудникам
+                value:
+                  target: staff
+                  staff_ids: [3, 4]
+                  message: Проверьте задачу
+      responses:
+        '200':
+          description: Рассылка поставлена в очередь
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BroadcastResponse'
+        '403':
+          description: Только admin может делать рассылку
 
   /events/{event_id}/messages/{message_id}/read:
     parameters:

@@ -70,6 +70,14 @@ async def _ensure_event_access(event_id: int, current_staff: Staff) -> None:
         )
 
 
+def _require_admin(current_staff: Staff) -> None:
+    if not current_staff.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin can broadcast messages",
+        )
+
+
 async def _message_targets(
     db: AsyncSession,
     event_id: int,
@@ -117,6 +125,85 @@ async def _enqueue_message_delivery(
         )
 
 
+async def _broadcast_targets(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    payload: schemas.BroadcastCreate,
+    sender: Staff,
+) -> list[Staff]:
+    target = payload.target.strip().lower()
+
+    if target == "role":
+        if payload.role_id is None:
+            raise HTTPException(status_code=422, detail="role_id is required for role broadcast")
+        role = await db.scalar(select(Role).where(Role.id == payload.role_id, Role.event_id == event_id))
+        if role is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        result = await db.scalars(
+            select(Staff).where(Staff.event_id == event_id, Staff.role_id == payload.role_id).order_by(Staff.id.asc())
+        )
+        targets = list(result.all())
+    elif target == "staff":
+        staff_ids = list(dict.fromkeys(payload.staff_ids))
+        if not staff_ids:
+            raise HTTPException(status_code=422, detail="staff_ids is required for staff broadcast")
+        result = await db.scalars(
+            select(Staff).where(Staff.event_id == event_id, Staff.id.in_(staff_ids)).order_by(Staff.id.asc())
+        )
+        targets = list(result.all())
+        found_ids = {staff.id for staff in targets}
+        missing_ids = [staff_id for staff_id in staff_ids if staff_id not in found_ids]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Staff not found: {missing_ids}")
+    else:
+        result = await db.scalars(select(Staff).where(Staff.event_id == event_id).order_by(Staff.id.asc()))
+        targets = list(result.all())
+
+    if not payload.include_sender:
+        targets = [staff for staff in targets if staff.id != sender.id]
+    return targets
+
+
+def _broadcast_message_rows(
+    *,
+    event_id: int,
+    sender_id: int,
+    payload: schemas.BroadcastCreate,
+    targets: list[Staff],
+) -> list[Message]:
+    target = payload.target.strip().lower()
+    if target == "role":
+        return [
+            Message(
+                event_id=event_id,
+                from_staff_id=sender_id,
+                to_role_id=payload.role_id,
+                content=payload.message,
+                visibility=Visibility.role_only,
+            )
+        ]
+    if target == "staff":
+        return [
+            Message(
+                event_id=event_id,
+                from_staff_id=sender_id,
+                to_staff_id=staff.id,
+                content=payload.message,
+                visibility=Visibility.confidential,
+            )
+            for staff in targets
+        ]
+    return [
+        Message(
+            event_id=event_id,
+            from_staff_id=sender_id,
+            content=payload.message,
+            visibility=Visibility.public,
+        )
+    ]
+
+
 @router.get("", response_model=list[schemas.Message])
 async def list_messages(
     event_id: int,
@@ -131,6 +218,47 @@ async def list_messages(
         .order_by(Message.created_at.desc(), Message.id.desc())
     )
     return [_serialize_message(item) for item in result]
+
+
+@router.post("/broadcast", response_model=schemas.BroadcastResponse)
+async def broadcast_message(
+    event_id: int,
+    payload: schemas.BroadcastCreate,
+    db: AsyncSession = Depends(get_db),
+    current_staff: Staff = Depends(get_current_staff),
+) -> schemas.BroadcastResponse:
+    await _ensure_event_access(event_id, current_staff)
+    _require_admin(current_staff)
+
+    targets = await _broadcast_targets(db, event_id=event_id, payload=payload, sender=current_staff)
+    skipped_without_telegram_ids = [staff.id for staff in targets if not staff.telegram_id]
+    deliverable_targets = [staff for staff in targets if staff.telegram_id]
+
+    messages = _broadcast_message_rows(
+        event_id=event_id,
+        sender_id=current_staff.id,
+        payload=payload,
+        targets=targets,
+    )
+    db.add_all(messages)
+    await db.commit()
+
+    text = f"{current_staff.name}: {payload.message}"
+    for staff in deliverable_targets:
+        await enqueue_notification(
+            {
+                "telegram_id": staff.telegram_id,
+                "message": text,
+                "disable_notification": payload.disable_notification,
+            }
+        )
+
+    return schemas.BroadcastResponse(
+        queued_count=len(deliverable_targets),
+        target_staff_ids=[staff.id for staff in targets],
+        skipped_without_telegram_ids=skipped_without_telegram_ids,
+        message_ids=[message.id for message in messages],
+    )
 
 
 @router.post("", response_model=schemas.Message, status_code=status.HTTP_201_CREATED)

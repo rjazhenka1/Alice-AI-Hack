@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 160
 MIN_PRINTABLE_RATIO = 0.85
-IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/tiff", "image/bmp"}
+OCR_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/tiff", "image/bmp", "application/pdf"}
 MIN_KEYWORD_LENGTH = 4
 
 
@@ -48,12 +48,12 @@ async def extract_indexable_text(
     metadata: dict[str, Any] | None,
 ) -> str:
     content_type = _infer_content_type(source_title=source_title, source_url=source_url, metadata=metadata)
-    if content_type in IMAGE_MIME_TYPES:
+    if content_type in OCR_MIME_TYPES:
         try:
             return await VisionOCRClient().recognize_text(content=content, mime_type=content_type)
         except Exception:
             logger.exception("Failed to extract text with OCR: source_title=%s content_type=%s", source_title, content_type)
-            return ""
+            return decode_document_text(content)
 
     return decode_document_text(content)
 

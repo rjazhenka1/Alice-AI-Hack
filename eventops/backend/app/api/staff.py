@@ -182,7 +182,7 @@ async def get_staff_context(
         (
             await db.scalars(
                 select(Message)
-                .options(selectinload(Message.from_staff).selectinload(Staff.role))
+                .options(selectinload(Message.from_staff))
                 .where(Message.event_id == event_id)
                 .where(visible_messages)
                 .where(or_(Message.to_staff_id == staff_id, Message.from_staff_id == staff_id, Message.to_role_id == target.role_id))

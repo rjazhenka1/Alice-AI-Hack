@@ -260,6 +260,20 @@ class MessageCreate(BaseModel):
     to_role_id:   Optional[int] = None
     visibility:   Visibility    = Visibility.public
 
+class BroadcastCreate(BaseModel):
+    message:              str       = Field(..., min_length=1, examples=["Сбор у штаба через 10 минут"])
+    target:               str       = Field("all", pattern=r"^(all|role|staff)$")
+    role_id:              Optional[int] = None
+    staff_ids:            list[int] = Field(default_factory=list)
+    disable_notification: bool      = False
+    include_sender:       bool      = False
+
+class BroadcastResponse(BaseModel):
+    queued_count: int
+    target_staff_ids: list[int]
+    skipped_without_telegram_ids: list[int]
+    message_ids: list[int]
+
 class Message(BaseModel):
     id:            int
     event_id:      int
