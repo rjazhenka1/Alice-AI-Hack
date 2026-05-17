@@ -596,13 +596,42 @@ export default function App() {
       return;
     }
 
-    await sendMessage({ content: text, visibility: "public" });
-    appendChat({
-      from: "me",
-      text: `Всем: ${text}`,
-      source: "admin_broadcast",
-    });
-    setBroadcastMode(false);
+    setAgentError("");
+
+    if (!selectedEvent) {
+      setAgentError("Сначала выбери мероприятие.");
+      return;
+    }
+
+    if (isDemoMode) {
+      await sendMessage({ content: text, visibility: "public" });
+      appendChat({
+        from: "me",
+        text: `Всем: ${text}`,
+        source: "admin_broadcast",
+      });
+      setBroadcastMode(false);
+      return;
+    }
+
+    setIsCommandLoading(true);
+    try {
+      const result = await api.broadcastMessage(selectedEvent.id, {
+        target: "all",
+        message: text,
+      });
+      appendChat({
+        from: "me",
+        text: `Всем: ${text}\nОтправлено: ${result.queued_count}`,
+        source: "admin_broadcast",
+      });
+      setBroadcastMode(false);
+      refreshEventData();
+    } catch (error) {
+      setAgentError(error.message);
+    } finally {
+      setIsCommandLoading(false);
+    }
   };
 
   const loadTicketReplies = async (ticketId) => {
@@ -716,7 +745,7 @@ export default function App() {
     try {
       const response = await api.sendCommand(selectedEvent.id, {
         text,
-        mode: "chat",
+        mode: isAdminMode ? "command" : "chat",
         context: buildAgentContext(chat, userMessage),
       });
       appendChat({ from: "alice", text: response.message, source: "agent_text" });
@@ -762,7 +791,7 @@ export default function App() {
         : await api.sendCommand(selectedEvent.id, {
             audio_base64: audioBase64,
             audio_mime_type: mimeType,
-            mode: "chat",
+            mode: isAdminMode ? "command" : "chat",
             context: buildAgentContext(chat, userMessage),
           });
       appendChat({ from: "alice", text: response.message, source: "agent_text" });

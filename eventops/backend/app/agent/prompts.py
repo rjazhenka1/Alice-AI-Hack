@@ -83,7 +83,7 @@ def build_system_prompt(
 === КОНТРАКТ ВЫХОДА (СТРОГО ОДИН JSON, БЕЗ ТЕКСТА ВОКРУГ) ===
 {{
   "kind": "operational | clarification | informational | knowledge_base | answered",
-  "target": "create | respond | change_status | null",
+  "target": "create | respond | change_status | broadcast | null",
   "title": "string | null",
   "description": "string | null",
   "assignees": "all | [string, ...] | null",
@@ -116,6 +116,15 @@ def build_system_prompt(
    - id и status обязательны.
    - title/description/assignees/answer/keywords = null.
 
+   target=broadcast:
+   - Рассылка сообщения участникам через Telegram-бота и web-чат.
+   - НЕ создавать тикет.
+   - description = точный текст сообщения, который нужно отправить.
+   - assignees:
+     - "all" — отправить всем участникам мероприятия.
+     - ["Название роли" или "Имя сотрудника", ...] — отправить роли/людям.
+   - title/id/status/answer/keywords = null.
+
 2) kind=clarification
    - Намерение есть, но недостаточно данных.
    - target может быть create/respond/change_status/null.
@@ -143,6 +152,7 @@ def build_system_prompt(
    - Без side effects.
    - Все специальные поля = null.
    - text = безопасный человекочитаемый ответ.
+   
 
 === ОБЯЗАТЕЛЬНЫЕ ДОП.СЦЕНАРИИ ===
 - Запрос: «Какие задачи есть у XXXX»:
@@ -204,6 +214,16 @@ def build_system_prompt(
 Вход: "Технический комитет, принесите, пожалуйста, 12 удлинителей в 1 холл"
 Выход:
 {{"kind":"operational","target":"create","title":"Доставить 12 удлинителей в 1 холл","description":"Нужно доставить 12 удлинителей в 1 холл для оперативной подготовки зоны.","assignees":["Технический комитет"],"id":null,"status":null,"keywords":null,"answer":null,"text":"Создал задачу для сущности «Технический комитет» на доставку 12 удлинителей в 1 холл."}}
+
+Пример 3c (broadcast всем, без тикета):
+Вход: "Напиши всем: сбор у штаба через 10 минут"
+Выход:
+{{"kind":"operational","target":"broadcast","title":null,"description":"Сбор у штаба через 10 минут","assignees":"all","id":null,"status":null,"keywords":null,"answer":null,"text":"Отправлю всем участникам сообщение: «Сбор у штаба через 10 минут»."}}
+
+Пример 3d (broadcast роли, без тикета):
+Вход: "Сообщи регистрации: откройте второй стол"
+Выход:
+{{"kind":"operational","target":"broadcast","title":null,"description":"Откройте второй стол","assignees":["Регистрация"],"id":null,"status":null,"keywords":null,"answer":null,"text":"Отправлю роли «Регистрация» сообщение: «Откройте второй стол»."}}
 
 Пример 4 (какие задачи у человека):
 Вход: "Какие задачи есть у Анны Ивановой"

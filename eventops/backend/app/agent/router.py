@@ -18,6 +18,7 @@ from ..models import (
     ConfidentialityRule,
     Event,
     KnowledgeBaseLink,
+    Message,
     Role,
     Staff,
     StaffStatus,
@@ -282,6 +283,8 @@ def _is_ticket_summary_query(text: str) -> bool:
 
 def _infer_ticket_priority(text: str) -> TicketPriority:
     lowered = (text or "").lower()
+    if re.search(r"\bне\s+срочно\b", lowered):
+        return TicketPriority.low
     if any(marker in lowered for marker in ("критично", "критическая", "критический", "пожар", "немедленно", "прямо сейчас")):
         return TicketPriority.critical
     if any(marker in lowered for marker in ("срочно", "urgent", "asap", "как можно быстрее", "быстро")):
@@ -655,6 +658,100 @@ def _extract_completion_query(text: str) -> str | None:
     return tail or ""
 
 
+async def _resolve_broadcast_targets(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    sender: Staff,
+    assignees: str | list[str] | None,
+) -> tuple[list[Staff], str]:
+    if isinstance(assignees, str) and assignees.strip().lower() == "all":
+        result = await db.scalars(select(Staff).where(Staff.event_id == event_id).order_by(Staff.id.asc()))
+        return [staff for staff in result.all() if staff.id != sender.id], "all"
+
+    if isinstance(assignees, list) and assignees:
+        resolved = await _resolve_assignees_with_rag(db, event_id=event_id, assignees=assignees)
+        if resolved is None:
+            return [], "unresolved"
+
+        role_ids, staff_ids = resolved
+        clauses = []
+        if role_ids:
+            clauses.append(Staff.role_id.in_(role_ids))
+        if staff_ids:
+            clauses.append(Staff.id.in_(staff_ids))
+        if not clauses:
+            return [], "empty"
+
+        result = await db.scalars(
+            select(Staff)
+            .where(Staff.event_id == event_id, or_(*clauses))
+            .order_by(Staff.id.asc())
+        )
+        return [staff for staff in result.all() if staff.id != sender.id], "targeted"
+
+    return [], "empty"
+
+
+async def _send_agent_broadcast(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    sender: Staff,
+    assignees: str | list[str] | None,
+    content: str,
+) -> tuple[int, list[int], list[int], list[int]]:
+    targets, target_kind = await _resolve_broadcast_targets(
+        db,
+        event_id=event_id,
+        sender=sender,
+        assignees=assignees,
+    )
+    if target_kind == "unresolved":
+        return -1, [], [], []
+    if not targets:
+        return 0, [], [], []
+
+    if target_kind == "all":
+        message_rows = [
+            Message(
+                event_id=event_id,
+                from_staff_id=sender.id,
+                content=content,
+                visibility=Visibility.public,
+            )
+        ]
+    else:
+        message_rows = [
+            Message(
+                event_id=event_id,
+                from_staff_id=sender.id,
+                to_staff_id=target.id,
+                content=content,
+                visibility=Visibility.confidential,
+            )
+            for target in targets
+        ]
+
+    db.add_all(message_rows)
+    await db.flush()
+
+    skipped = [staff.id for staff in targets if not staff.telegram_id]
+    deliverable = [staff for staff in targets if staff.telegram_id]
+    notification_text = f"{sender.name}: {content}"
+    from ..notifier import enqueue_notification
+
+    for staff in deliverable:
+        await enqueue_notification({"telegram_id": staff.telegram_id, "message": notification_text})
+
+    return (
+        len(deliverable),
+        [staff.id for staff in targets],
+        skipped,
+        [int(message.id) for message in message_rows if message.id is not None],
+    )
+
+
 def _finalize_response(response: AgentCommandResponse) -> AgentCommandResponse:
     model_text = (response.model_response or "").strip()
     ui_text = (response.message or "").strip()
@@ -888,7 +985,56 @@ async def handle_command(
     else:
         operational_target = (planned.target or "create").strip().lower()
 
-        if operational_target == "change_status":
+        if operational_target == "broadcast":
+            broadcast_text = (planned.description or planned.message or "").strip()
+            if not broadcast_text:
+                response = AgentCommandResponse(
+                    action="question_asked",
+                    message="Уточни текст сообщения для рассылки.",
+                    model_response="Уточни текст сообщения для рассылки.",
+                    author=response_author,
+                    author_role=response_author_role,
+                )
+            else:
+                queued_count, target_staff_ids, skipped_without_telegram_ids, _ = await _send_agent_broadcast(
+                    db,
+                    event_id=event_id,
+                    sender=current_staff,
+                    assignees=planned.assignees,
+                    content=broadcast_text,
+                )
+                if queued_count < 0:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Не смог однозначно определить получателей рассылки. Уточни: всем, конкретной роли или конкретным людям?",
+                        model_response="Не смог однозначно определить получателей рассылки. Уточни: всем, конкретной роли или конкретным людям?",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                elif not target_staff_ids:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Не нашла получателей для рассылки.",
+                        model_response="Не нашла получателей для рассылки.",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                else:
+                    skipped_tail = (
+                        f" Без telegram_id: {len(skipped_without_telegram_ids)}."
+                        if skipped_without_telegram_ids
+                        else ""
+                    )
+                    answer = f"Отправила сообщение в web-чат и поставила в Telegram-очередь: {queued_count}.{skipped_tail}"
+                    response = AgentCommandResponse(
+                        action="answered",
+                        message=answer,
+                        model_response=answer,
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+
+        elif operational_target == "change_status":
             if planned.ticket_id is None:
                 response = AgentCommandResponse(
                     action="question_asked",

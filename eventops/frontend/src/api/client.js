@@ -130,6 +130,11 @@ export const api = {
       method: "POST",
       body: payload,
     }),
+  broadcastMessage: (eventId, payload) =>
+    request(`/events/${eventId}/messages/broadcast`, {
+      method: "POST",
+      body: payload,
+    }),
   markMessageRead: (eventId, messageId) =>
     request(`/events/${eventId}/messages/${messageId}/read`, {
       method: "PATCH",
