@@ -44,6 +44,15 @@ async def _require_admin(staff: Staff) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can modify knowledge settings")
 
 
+async def _knowledge_visibility_clause(db: AsyncSession, staff: Staff):
+    if await can_see_confidential(db, staff):
+        return KnowledgeBaseLink.event_id == staff.event_id
+    return (
+        (KnowledgeBaseLink.event_id == staff.event_id)
+        & (KnowledgeBaseLink.visibility != Visibility.confidential)
+    )
+
+
 @router.get("/knowledge", response_model=list[schemas.KnowledgeBaseLink])
 async def list_knowledge_links(
     event_id: int,
@@ -51,9 +60,10 @@ async def list_knowledge_links(
     current_staff: Staff = Depends(get_current_staff),
 ) -> list[KnowledgeBaseLink]:
     await ensure_event_access(event_id, current_staff)
+    visibility_clause = await _knowledge_visibility_clause(db, current_staff)
     result = await db.execute(
         select(KnowledgeBaseLink)
-        .where(KnowledgeBaseLink.event_id == event_id, KnowledgeBaseLink.is_active.is_(True))
+        .where(visibility_clause, KnowledgeBaseLink.is_active.is_(True))
         .order_by(KnowledgeBaseLink.id.asc())
     )
     return list(result.scalars().all())
@@ -100,7 +110,13 @@ async def search_knowledge(
     current_staff: Staff = Depends(get_current_staff),
 ) -> list[dict[str, Any]]:
     await ensure_event_access(event_id, current_staff)
-    return await search_document_chunks(db, event_id=event_id, query=q, limit=max(1, min(limit, 20)))
+    return await search_document_chunks(
+        db,
+        event_id=event_id,
+        query=q,
+        limit=max(1, min(limit, 20)),
+        current_staff=current_staff,
+    )
 
 
 @router.post("/knowledge/upload", response_model=schemas.KnowledgeBaseLink, status_code=status.HTTP_201_CREATED)

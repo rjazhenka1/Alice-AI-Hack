@@ -344,6 +344,71 @@ async def test_upload_knowledge_document(
     assert search_response.json()[0]["source_title"] == "Регламент"
 
 
+async def test_knowledge_search_respects_confidential_visibility(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    event = await seed_event(db_session)
+    admin = await seed_staff(db_session, event.id, name="Admin", is_admin=True)
+    volunteer = await seed_staff(db_session, event.id, name="Volunteer")
+    public_link = KnowledgeBaseLink(
+        event_id=event.id,
+        title="Публичная инструкция",
+        url="admin://public",
+        visibility="public",
+        is_active=True,
+    )
+    secret_link = KnowledgeBaseLink(
+        event_id=event.id,
+        title="Закрытая инструкция",
+        url="admin://secret",
+        visibility="confidential",
+        is_active=True,
+    )
+    db_session.add_all([public_link, secret_link])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            DocumentChunk(
+                event_id=event.id,
+                knowledge_base_link_id=public_link.id,
+                content="Общий регламент регистрации",
+                source_title=public_link.title,
+                source_url=public_link.url,
+                chunk_index=0,
+            ),
+            DocumentChunk(
+                event_id=event.id,
+                knowledge_base_link_id=secret_link.id,
+                content="Секретный регламент жюри",
+                source_title=secret_link.title,
+                source_url=secret_link.url,
+                chunk_index=0,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    volunteer_response = await client.get(
+        f"/events/{event.id}/knowledge/search",
+        params={"q": "регламент", "limit": 10},
+        headers=auth_headers(volunteer),
+    )
+    assert volunteer_response.status_code == 200
+    assert {item["source_title"] for item in volunteer_response.json()} == {"Публичная инструкция"}
+
+    admin_response = await client.get(
+        f"/events/{event.id}/knowledge/search",
+        params={"q": "регламент", "limit": 10},
+        headers=auth_headers(admin),
+    )
+    assert admin_response.status_code == 200
+    assert {item["source_title"] for item in admin_response.json()} == {
+        "Публичная инструкция",
+        "Закрытая инструкция",
+    }
+
+
 async def test_admin_can_broadcast_to_all_role_or_staff(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -497,7 +562,7 @@ async def test_telegram_webhook_voice_transcribes_and_answers(
     assert response.status_code == 200
     message = await db_session.scalar(select(Message).where(Message.from_staff_id == staff.id))
     assert message is not None
-    assert "transcript=Что мне делать?" in message.content
+    assert message.content == "[voice] Что мне делать?"
     assert queued_notifications == [
         {
             "telegram_id": "778",
@@ -553,6 +618,9 @@ async def test_telegram_document_can_attach_to_ticket(
 
     assert response.status_code == 200
     assert queued_notifications[0]["message"] == f"Прикрепила документ к задаче #{ticket_id}: Отчёт"
+    message = await db_session.scalar(select(Message).where(Message.from_staff_id == staff.id))
+    assert message is not None
+    assert message.content == "[document] Отчёт"
     db_session.expire_all()
     ticket = await db_session.scalar(select(Ticket).where(Ticket.id == ticket_id))
     assert ticket is not None
@@ -665,6 +733,9 @@ async def test_telegram_photo_kb_upload_extracts_text_for_rag(
 
     assert response.status_code == 200
     assert queued_notifications[0]["message"] == "Загрузила документ в базу знаний: Схема входа. Чанков: 1."
+    message = await db_session.scalar(select(Message).where(Message.from_staff_id == staff.id))
+    assert message is not None
+    assert message.content == "[photo] Схема входа"
     link = await db_session.scalar(select(KnowledgeBaseLink).where(KnowledgeBaseLink.title == "Схема входа"))
     assert link is not None
     chunk = await db_session.scalar(select(DocumentChunk).where(DocumentChunk.knowledge_base_link_id == link.id))

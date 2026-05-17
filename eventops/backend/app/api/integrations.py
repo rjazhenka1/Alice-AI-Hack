@@ -333,17 +333,20 @@ async def _handle_telegram_document(
     return "Файл получила. Подпиши его `ticket #123 ...`, чтобы прикрепить к задаче, или `kb ...`, чтобы загрузить в базу знаний."
 
 
-def _voice_message_content(voice: dict[str, Any], file_path: Path) -> str:
-    duration = voice.get("duration")
-    mime_type = voice.get("mime_type")
-    file_size = voice.get("file_size")
-    return (
-        "[voice] "
-        f"path={file_path} "
-        f"duration={duration if duration is not None else 'unknown'} "
-        f"mime_type={mime_type or 'unknown'} "
-        f"file_size={file_size if file_size is not None else 'unknown'}"
-    )
+def _voice_message_content(transcript: str) -> str:
+    clean_transcript = " ".join((transcript or "").split())
+    return f"[voice] {clean_transcript}" if clean_transcript else "[voice]"
+
+
+def _attachment_message_content(telegram_message: dict[str, Any]) -> str:
+    document = telegram_message.get("document")
+    photos = telegram_message.get("photo") or []
+    photo = _largest_photo(photos) if isinstance(photos, list) else None
+    payload = document or photo or {}
+    label = "photo" if photo and not document else "document"
+    fallback = "photo" if label == "photo" else str(payload.get("file_name") or "document")
+    title = " ".join(_caption_title(telegram_message.get("caption"), fallback).split())
+    return f"[{label}] {title}" if title else f"[{label}]"
 
 
 async def _transcribe_voice_file(file_path: Path) -> str:
@@ -351,13 +354,15 @@ async def _transcribe_voice_file(file_path: Path) -> str:
     return await SpeechKitClient().transcribe_audio_base64(audio_base64=audio_base64)
 
 
-async def _answer_with_alice(db: AsyncSession, staff: Staff, text: str) -> str:
+async def _answer_with_alice(db: AsyncSession, staff: Staff, text: str, *, audio_file: str | None = None) -> str:
     event_id = int(getattr(staff, "event_id"))
     response = await handle_command(
         db=db,
         event_id=event_id,
         current_staff=staff,
         text=text,
+        source="telegram_voice" if audio_file else "telegram_text",
+        audio_file=audio_file,
     )
     return response.model_response or response.message
 
@@ -410,17 +415,17 @@ async def telegram_webhook(
         await _store_incoming_message(
             db,
             staff,
-            f"{_voice_message_content(voice, voice_path)} transcript={transcribed_text}",
+            _voice_message_content(transcribed_text),
         )
         try:
-            reply = await _answer_with_alice(db, staff, transcribed_text)
+            reply = await _answer_with_alice(db, staff, transcribed_text, audio_file=str(voice_path))
         except Exception:
             logger.exception("Failed to answer Telegram voice via Alice: telegram_id=%s", telegram_id)
             reply = f"Распознала голосовое: {transcribed_text}\nНо не смогла получить ответ Алисы."
     elif document or photo:
         try:
             reply = await _handle_telegram_document(db, staff=staff, telegram_message=telegram_message)
-            await _store_incoming_message(db, staff, f"[document] {reply}")
+            await _store_incoming_message(db, staff, _attachment_message_content(telegram_message))
         except Exception:
             logger.exception("Failed to process Telegram document/photo: telegram_id=%s", telegram_id)
             await db.rollback()

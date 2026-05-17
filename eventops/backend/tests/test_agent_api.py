@@ -370,6 +370,75 @@ async def test_chat_mode_searches_document_chunks(db_session: AsyncSession):
     assert "storage/documents" not in response.message
 
 
+@pytest.mark.asyncio
+async def test_knowledge_query_marks_hidden_confidential_match(db_session: AsyncSession):
+    event_id, _, worker_id = await _seed_event_with_staff(db_session)
+    worker = await _get_staff(db_session, worker_id)
+    from app.models import DocumentChunk, KnowledgeBaseLink
+
+    link = KnowledgeBaseLink(
+        event_id=event_id,
+        title="Закрытые результаты",
+        url="admin://secret-results",
+        visibility=Visibility.confidential,
+        is_active=True,
+    )
+    db_session.add(link)
+    await db_session.flush()
+    db_session.add(
+        DocumentChunk(
+            event_id=event_id,
+            knowledge_base_link_id=link.id,
+            content="Команда Polar Bear Transform решила 7 задач",
+            source_title=link.title,
+            source_url=link.url,
+            chunk_index=0,
+        )
+    )
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Ответь смотря на базу знаний, сколько задач команда Polar Bear Transform решила?", mode="chat"),
+        db=db_session,
+        current_staff=worker,
+    )
+
+    assert response.action == "question_asked"
+    assert "закрытой базе знаний" in response.message
+    assert "7" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_lunch_schedule_query_uses_knowledge_base(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    from app.models import DocumentChunk
+
+    db_session.add(
+        DocumentChunk(
+            event_id=event_id,
+            content="Hall Volunteer Hall 1 Вера Синицына 12:30 Hall Volunteer Hall 2 Софья Лукова 12:30",
+            source_title="Расписание обедов",
+            source_url="storage/documents/lunch.jpg",
+            chunk_index=0,
+        )
+    )
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Выведи список всех волонтеров, которые обедают в 12:30"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "answered"
+    assert "Вера Синицына" in response.message
+    assert "Софья Лукова" in response.message
+    assert "Актуальные задачи" not in response.message
+
+
 def test_kb_answer_does_not_return_unrelated_vector_matches():
     from app.agent.router import _format_kb_search_answer
 

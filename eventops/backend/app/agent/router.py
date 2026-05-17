@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from difflib import SequenceMatcher
 from typing import Any
@@ -38,6 +39,8 @@ from ..schemas import (
     Ticket as TicketSchema,
 )
 
+
+logger = logging.getLogger(__name__)
 
 MAX_SESSION_MESSAGES = 20
 KB_SNIPPET_MAX_CHARS = 1400
@@ -94,6 +97,7 @@ def _format_kb_chunk_line(chunk: dict[str, Any]) -> str:
 
 def _query_terms(query: str) -> list[str]:
     terms = re.findall(r"[\wА-Яа-яЁё]+", (query or "").lower())
+    terms.extend(re.findall(r"\b\d{1,2}:\d{2}\b", query or ""))
     stop_words = {
         "есть",
         "базе",
@@ -110,15 +114,50 @@ def _query_terms(query: str) -> list[str]:
         "про",
         "найди",
         "расскажи",
+        "выведи",
+        "покажи",
+        "список",
+        "всех",
+        "которые",
         "информация",
         "информации",
+    }
+    synonyms = {
+        "волонтер": ["volunteer"],
+        "волонтеров": ["volunteer"],
+        "волонтёр": ["volunteer"],
+        "волонтёров": ["volunteer"],
+        "обед": ["обед", "обедов"],
+        "обедают": ["обед", "обедов"],
     }
     result: list[str] = []
     for term in terms:
         if len(term) < 4 or term in stop_words or term in result:
             continue
         result.append(term)
+        for synonym in synonyms.get(term, []):
+            if synonym not in result:
+                result.append(synonym)
     return result
+
+
+def _looks_like_kb_query(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "база знаний",
+            "базу знаний",
+            "инструкция",
+            "регламент",
+            "документ",
+            "расписание",
+            "обед",
+            "питание",
+            "кто обед",
+            "когда обед",
+        )
+    )
 
 
 CYRILLIC_TO_LATIN = str.maketrans(
@@ -418,9 +457,10 @@ async def _build_knowledge_response(
     keywords: list[str] | None,
     response_author: StaffAuthor | None,
     response_author_role: RoleShort | None,
+    current_staff: Staff,
 ) -> AgentCommandResponse:
     search_query = " ".join([question, *(keywords or [])]).strip()
-    docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5)
+    docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5, current_staff=current_staff)
     exact_docs = _filter_kb_chunks_for_query(docs, question)
     if not docs and not keywords:
         message = "Уточни, пожалуйста, что именно нужно найти в знаниях мероприятия."
@@ -433,6 +473,25 @@ async def _build_knowledge_response(
         )
 
     if not exact_docs:
+        unfiltered_docs = await search_document_chunks(db, event_id=event_id, query=search_query, limit=5)
+        if _filter_kb_chunks_for_query(unfiltered_docs, question):
+            message = (
+                "Нашла релевантную информацию, но она находится в закрытой базе знаний. "
+                "Я не могу раскрыть её текущему пользователю; попросите организатора с доступом проверить этот запрос."
+            )
+            logger.info(
+                "knowledge_answer_hidden_by_visibility event_id=%s staff_id=%s query=%r",
+                event_id,
+                current_staff.id,
+                question,
+            )
+            return AgentCommandResponse(
+                action="question_asked",
+                message=message,
+                model_response=message,
+                author=response_author,
+                author_role=response_author_role,
+            )
         message = "Не нашла точный ответ в базе знаний. Передала вопрос администратору."
         return AgentCommandResponse(
             action="question_asked",
@@ -539,18 +598,25 @@ async def _load_kb_context(
     db: AsyncSession,
     *,
     event_id: int,
+    current_staff: Staff,
     query_text: str | None = None,
 ) -> list[str]:
     if query_text:
-        chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5)
+        chunks = await search_document_chunks(db, event_id=event_id, query=query_text, limit=5, current_staff=current_staff)
         if chunks:
             return [_format_kb_chunk_line(chunk) for chunk in chunks]
 
+    knowledge_visibility_clause = (
+        true()
+        if await _can_see_confidential(db, current_staff)
+        else KnowledgeBaseLink.visibility != Visibility.confidential
+    )
     result = await db.execute(
         select(KnowledgeBaseLink)
         .where(
             KnowledgeBaseLink.event_id == event_id,
             KnowledgeBaseLink.is_active.is_(True),
+            knowledge_visibility_clause,
         )
         .order_by(KnowledgeBaseLink.id.asc())
         .limit(10)
@@ -886,7 +952,7 @@ async def handle_command(
     event, roles, zones, free_staff_count = await _load_event_context(db, event_id=event_id)
     visible_clause = await _ticket_visibility_clause(db, current_staff)
     admin_staff = await _load_admin_staff_names(db, event_id=event_id)
-    kb_context = await _load_kb_context(db, event_id=event_id)
+    kb_context = await _load_kb_context(db, event_id=event_id, current_staff=current_staff)
     confidentiality_rules = await _load_confidentiality_rules(db, event_id=event_id)
     incident_summary = await _load_incident_summary(
         db,
@@ -988,6 +1054,10 @@ async def handle_command(
         system_prompt=system_prompt,
         planned=planned,
     )
+    if planned.kind != "knowledge_base" and _looks_like_kb_query(text) and not _is_ticket_summary_query(text):
+        planned.kind = "knowledge_base"
+        planned.target = None
+        planned.keywords = planned.keywords or _query_terms(text)
 
     if mode != "command":
         if planned.kind == "informational":
@@ -1007,6 +1077,7 @@ async def handle_command(
                 keywords=planned.keywords,
                 response_author=response_author,
                 response_author_role=response_author_role,
+                current_staff=current_staff,
             )
         elif planned.kind in {"answered", "clarification"}:
             response = AgentCommandResponse(
@@ -1070,6 +1141,7 @@ async def handle_command(
             keywords=planned.keywords,
             response_author=response_author,
             response_author_role=response_author_role,
+            current_staff=current_staff,
         )
     else:
         operational_target = (planned.target or "create").strip().lower()

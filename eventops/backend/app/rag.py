@@ -10,7 +10,7 @@ from sqlalchemy import insert, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .agent.alice import VisionOCRClient, YandexEmbeddingClient
-from .models import DocumentChunk
+from .models import DocumentChunk, KnowledgeBaseLink, Role, Staff, Ticket, TicketAssignment, Visibility
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,15 @@ def vector_literal(embedding: list[float]) -> str:
 
 def _query_keywords(query: str) -> list[str]:
     words = re.findall(r"[\wА-Яа-яЁё]+", (query or "").lower())
+    words.extend(re.findall(r"\b\d{1,2}:\d{2}\b", query or ""))
+    synonyms = {
+        "волонтер": ["volunteer"],
+        "волонтеров": ["volunteer"],
+        "волонтёр": ["volunteer"],
+        "волонтёров": ["volunteer"],
+        "обед": ["обед", "обедов"],
+        "обедают": ["обед", "обедов"],
+    }
     seen: set[str] = set()
     result: list[str] = []
     for word in words:
@@ -103,6 +112,10 @@ def _query_keywords(query: str) -> list[str]:
             continue
         seen.add(word)
         result.append(word)
+        for synonym in synonyms.get(word, []):
+            if synonym not in seen:
+                seen.add(synonym)
+                result.append(synonym)
     return result[:8]
 
 
@@ -118,6 +131,75 @@ def _chunk_to_result(chunk: DocumentChunk, *, score: float | None = None) -> dic
         "chunk_index": chunk.chunk_index,
         "score": score,
     }
+
+
+async def _staff_can_see_confidential(db: AsyncSession, staff: Staff) -> bool:
+    if staff.is_admin:
+        return True
+    if staff.role_id is None:
+        return False
+    result = await db.execute(select(Role.can_see_confidential).where(Role.id == staff.role_id))
+    return bool(result.scalar_one_or_none())
+
+
+async def _can_access_chunk(db: AsyncSession, item: dict[str, Any], staff: Staff) -> bool:
+    if staff.is_admin:
+        return True
+
+    knowledge_base_link_id = item.get("knowledge_base_link_id")
+    if knowledge_base_link_id is not None:
+        link = await db.get(KnowledgeBaseLink, int(knowledge_base_link_id))
+        if link is None or not link.is_active or link.event_id != staff.event_id:
+            return False
+        if link.visibility in {Visibility.public, Visibility.role_only}:
+            return True
+        return await _staff_can_see_confidential(db, staff)
+
+    ticket_id = item.get("ticket_id")
+    if ticket_id is not None:
+        ticket = await db.get(Ticket, int(ticket_id))
+        if ticket is None or ticket.event_id != staff.event_id:
+            return False
+        if ticket.visibility == Visibility.public:
+            return True
+        if ticket.visibility == Visibility.role_only and ticket.assignee_role_id == staff.role_id:
+            return True
+        if ticket.visibility == Visibility.confidential and await _staff_can_see_confidential(db, staff):
+            return True
+        if ticket.created_by_id == staff.id:
+            return True
+        assignment_id = await db.scalar(
+            select(TicketAssignment.id)
+            .where(TicketAssignment.ticket_id == ticket.id, TicketAssignment.staff_id == staff.id)
+            .limit(1)
+        )
+        return assignment_id is not None
+
+    return item.get("event_id") == staff.event_id
+
+
+async def _filter_chunks_for_staff(
+    db: AsyncSession,
+    items: list[dict[str, Any]],
+    *,
+    current_staff: Staff | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if current_staff is None:
+        return items[:limit]
+
+    visible: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for item in items:
+        item_id = int(item["id"])
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        if await _can_access_chunk(db, item, current_staff):
+            visible.append(item)
+            if len(visible) >= limit:
+                break
+    return visible
 
 
 async def _keyword_search_document_chunks(
@@ -221,14 +303,16 @@ async def search_document_chunks(
     event_id: int,
     query: str,
     limit: int = 5,
+    current_staff: Staff | None = None,
 ) -> list[dict[str, Any]]:
     is_postgres = db.bind is not None and db.bind.dialect.name == "postgresql"
     results: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
+    search_limit = max(limit * 5, limit)
 
     if is_postgres:
         try:
-            for row in await _keyword_search_document_chunks(db, event_id=event_id, query=query, limit=limit):
+            for row in await _keyword_search_document_chunks(db, event_id=event_id, query=query, limit=search_limit):
                 seen_ids.add(int(row["id"]))
                 results.append(row)
         except Exception:
@@ -249,7 +333,7 @@ async def search_document_chunks(
                     LIMIT :limit
                     """
                 ),
-                {"event_id": event_id, "embedding": vector_literal(embedding), "limit": limit},
+                {"event_id": event_id, "embedding": vector_literal(embedding), "limit": search_limit},
             )
             for row in result.all():
                 item = dict(row._mapping)
@@ -258,10 +342,10 @@ async def search_document_chunks(
                     continue
                 seen_ids.add(item_id)
                 results.append(item)
-                if len(results) >= limit:
+                if len(results) >= search_limit:
                     break
             if results:
-                return results[:limit]
+                return await _filter_chunks_for_staff(db, results, current_staff=current_staff, limit=limit)
         except Exception:
             logger.exception("Vector RAG search failed; falling back to text search")
 
@@ -275,6 +359,7 @@ async def search_document_chunks(
         select(DocumentChunk)
         .where(DocumentChunk.event_id == event_id, content_filter)
         .order_by(DocumentChunk.id.desc())
-        .limit(limit)
+        .limit(search_limit)
     )
-    return [_chunk_to_result(chunk) for chunk in result.scalars().all()]
+    results.extend(_chunk_to_result(chunk) for chunk in result.scalars().all() if chunk.id not in seen_ids)
+    return await _filter_chunks_for_staff(db, results, current_staff=current_staff, limit=limit)
