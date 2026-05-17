@@ -379,9 +379,10 @@ class AgentCommandRequest(BaseModel):
     )
     mode:          str = Field(
         "command",
-        pattern=r"^(command|chat|ticket_question)$",
+        pattern=r"^(command|task_command|chat|ticket_question)$",
         description=(
             "command — операционная команда координатора с возможным созданием тикетов; "
+            "task_command — экран создания задач, только операционные команды без KB-ответов; "
             "chat — справочный чат без создания тикетов; "
             "ticket_question — вопрос внутри обсуждения тикета без создания новых тикетов."
         ),

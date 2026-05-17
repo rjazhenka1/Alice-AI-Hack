@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.alice import KnowledgeCaptureDecision
 from app.auth import ALGORITHM
-from app.models import DocumentChunk, KnowledgeBaseLink, Message, Ticket
+from app.models import DocumentChunk, KnowledgeBaseLink, Message, Staff, Ticket
 
 from conftest import auth_headers, seed_event, seed_role, seed_staff
 
@@ -511,6 +511,83 @@ async def test_telegram_webhook_text_saves_message_and_queues_reply(
 
     assert queued_notifications[0]["telegram_id"] == "777"
     assert queued_notifications[0]["message"]
+
+
+async def test_telegram_start_registers_user_in_first_event(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+):
+    event = await seed_event(db_session)
+    await db_session.commit()
+    queued_notifications: list[dict[str, str]] = []
+
+    async def fake_enqueue_notification(payload: dict[str, str]) -> None:
+        queued_notifications.append(payload)
+
+    monkeypatch.setattr("app.api.integrations.enqueue_notification", fake_enqueue_notification)
+
+    response = await client.post(
+        "/integrations/telegram/webhook",
+        json={
+            "message": {
+                "message_id": 20,
+                "from": {"id": 900, "username": "new_user", "first_name": "Новый", "last_name": "Участник"},
+                "chat": {"id": 900},
+                "text": "/start",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    staff = await db_session.scalar(select(Staff).where(Staff.telegram_id == "900"))
+    assert staff is not None
+    assert staff.event_id == event.id
+    assert staff.name == "Новый Участник"
+    assert staff.telegram_username == "new_user"
+    assert queued_notifications == [
+        {
+            "telegram_id": "900",
+            "message": "Готово, добавила вас в мероприятие как участника: Новый Участник.",
+        }
+    ]
+
+
+async def test_telegram_start_updates_existing_user_without_duplicate(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+):
+    event = await seed_event(db_session)
+    staff = await seed_staff(db_session, event.id, name="Telegram User", telegram_id="901")
+    await db_session.commit()
+    queued_notifications: list[dict[str, str]] = []
+
+    async def fake_enqueue_notification(payload: dict[str, str]) -> None:
+        queued_notifications.append(payload)
+
+    monkeypatch.setattr("app.api.integrations.enqueue_notification", fake_enqueue_notification)
+
+    response = await client.post(
+        "/integrations/telegram/webhook",
+        json={
+            "message": {
+                "message_id": 21,
+                "from": {"id": 901, "username": "known_user", "first_name": "Known"},
+                "chat": {"id": 901},
+                "text": "/start",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    rows = (await db_session.scalars(select(Staff).where(Staff.telegram_id == "901"))).all()
+    assert len(rows) == 1
+    await db_session.refresh(rows[0])
+    assert rows[0].id == staff.id
+    assert rows[0].telegram_username == "known_user"
+    assert rows[0].name == "Known"
+    assert queued_notifications[0]["telegram_id"] == "901"
 
 
 async def test_telegram_webhook_voice_transcribes_and_answers(

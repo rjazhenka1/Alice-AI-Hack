@@ -718,7 +718,7 @@ export default function App() {
         if (lowered.includes("не знаю") || lowered.includes("вопрос")) {
           routeUnansweredQuestion(text);
           const response = {
-            message: "Не нашла точный ответ в базе знаний. Передала вопрос администратору.",
+            message: "Не нашла точной информации в базе знаний. Уточните запрос или добавьте нужный документ.",
           };
           appendChat({
             from: "alice",
@@ -756,7 +756,7 @@ export default function App() {
       }
     } catch (error) {
       const response = {
-        message: "Не смогла ответить сейчас. Передала вопрос администратору.",
+        message: "Не смогла ответить сейчас. Попробуйте уточнить вопрос.",
       };
       setAgentError(error.message);
       appendChat({
@@ -819,9 +819,9 @@ export default function App() {
       ? {
           audio_base64: command.audioBase64,
           audio_mime_type: command.mimeType,
-          mode: "command",
+          mode: "task_command",
         }
-      : { text: command.text, mode: "command" };
+      : { text: command.text, mode: "task_command" };
 
     setAgentError("");
     setAgentResponse(null);
@@ -978,7 +978,7 @@ export default function App() {
       return "Демо: проверила базу знаний и передала вопрос администратору.";
     }
 
-    let aliceText = "Передала вопрос администратору.";
+    let aliceText = "Вопрос сохранён в обсуждении.";
     let aliceAction = "question_asked";
     let questionText = content;
     try {

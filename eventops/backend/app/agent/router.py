@@ -160,6 +160,40 @@ def _looks_like_kb_query(text: str) -> bool:
     )
 
 
+def _looks_like_operational_command(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "создай задачу",
+            "создать задачу",
+            "заведи задачу",
+            "поставь задачу",
+            "назначь",
+            "поручи",
+            "нужно сделать",
+            "надо сделать",
+            "принеси",
+            "доставь",
+            "помоги",
+            "нужны люди",
+            "нужен человек",
+            "срочно",
+        )
+    )
+
+
+def _command_title_from_text(text: str) -> str:
+    cleaned = re.sub(
+        r"^\s*(создай|создать|заведи|поставь)\s+(задачу|тикет)\s*[:\-]?\s*",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    sentence = re.split(r"[.!?]", cleaned, maxsplit=1)[0].strip()
+    return sentence[:200] or "Операционная задача"
+
+
 CYRILLIC_TO_LATIN = str.maketrans(
     {
         "а": "a",
@@ -491,8 +525,8 @@ async def _build_knowledge_response(
                 model_response=message,
                 author=response_author,
                 author_role=response_author_role,
-            )
-        message = "Не нашла точный ответ в базе знаний. Передала вопрос администратору."
+        )
+        message = "Не нашла точной информации в базе знаний. Уточните запрос или добавьте нужный документ."
         return AgentCommandResponse(
             action="question_asked",
             message=message,
@@ -934,9 +968,10 @@ async def handle_command(
     mode: str = "command",
 ) -> AgentCommandResponse:
     response_author, response_author_role = await _response_author(db, current_staff)
-    mode = mode if mode in {"command", "chat", "ticket_question"} else "command"
-    if mode == "command" and not current_staff.is_admin:
+    mode = mode if mode in {"command", "task_command", "chat", "ticket_question"} else "command"
+    if mode in {"command", "task_command"} and not current_staff.is_admin:
         mode = "chat"
+    operational_mode = mode in {"command", "task_command"}
 
     session = await _get_or_create_session(db, event_id=event_id, staff_id=current_staff.id)
     context = (
@@ -973,16 +1008,16 @@ async def handle_command(
         recent_dialogue=_trim_context(context[:-1]),
     )
 
-    if mode != "command":
+    if not operational_mode:
         system_prompt += (
             "\n\nТекущий режим: справочный чат участника, не операционная команда координатора. "
             "Запрещено создавать тикеты, назначать людей или предлагать tool-действия. "
             "Отвечай только по видимому контексту мероприятия, базе знаний и видимым тикетам. "
             "Если точного ответа нет, верни kind=clarification и коротко скажи, что вопрос нужно передать администратору."
-        )
+    )
 
     completion_query = _extract_completion_query(text)
-    if mode == "command" and completion_query is not None:
+    if operational_mode and completion_query is not None:
         tickets_result = await db.execute(
             select(Ticket)
             .where(Ticket.event_id == event_id)
@@ -1054,12 +1089,23 @@ async def handle_command(
         system_prompt=system_prompt,
         planned=planned,
     )
-    if planned.kind != "knowledge_base" and _looks_like_kb_query(text) and not _is_ticket_summary_query(text):
+    if mode != "task_command" and planned.kind != "knowledge_base" and _looks_like_kb_query(text) and not _is_ticket_summary_query(text):
         planned.kind = "knowledge_base"
         planned.target = None
         planned.keywords = planned.keywords or _query_terms(text)
+    if operational_mode and planned.kind == "knowledge_base" and _looks_like_operational_command(text):
+        planned.kind = "operational"
+        planned.target = planned.target or "create"
+        planned.title = planned.title or _command_title_from_text(text)
+        planned.description = planned.description or text
+        planned.keywords = None
+    if mode == "task_command" and planned.kind != "operational":
+        planned.kind = "clarification"
+        planned.target = None
+        planned.message = "Уточните задачу: что нужно сделать, где это происходит и кому её назначить."
+        planned.keywords = None
 
-    if mode != "command":
+    if not operational_mode:
         if planned.kind == "informational":
             response = await _build_ticket_summary_response(
                 db,
@@ -1088,12 +1134,18 @@ async def handle_command(
                 author_role=response_author_role,
             )
         else:
-            message = (
-                "Не нашла точный ответ в базе знаний. "
-                "Передай вопрос администратору в обсуждении задачи."
-                if mode == "ticket_question"
-                else "Не нашла точный ответ в базе знаний. Передала вопрос администратору."
-            )
+            if planned.kind == "operational":
+                message = (
+                    "Это похоже на операционную команду, но текущий режим не позволяет создавать или менять задачи. "
+                    "Попросите организатора оформить задачу."
+                )
+            else:
+                message = (
+                    "Не нашла точной информации в базе знаний. "
+                    "Уточните вопрос в обсуждении задачи."
+                    if mode == "ticket_question"
+                    else "Не нашла точной информации в базе знаний. Уточните запрос или добавьте нужный документ."
+                )
             response = AgentCommandResponse(
                 action="question_asked",
                 message=message,

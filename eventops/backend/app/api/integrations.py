@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..agent.alice import SpeechKitClient
 from ..agent.router import handle_command
 from ..database import get_db
-from ..models import KnowledgeBaseLink, Message, Staff, Ticket, Visibility
+from ..models import Event, KnowledgeBaseLink, Message, Staff, Ticket, Visibility
 from ..notifier import enqueue_notification
 from ..rag import index_document_chunks
 from .common import ticket_visibility_filter
@@ -37,6 +37,51 @@ def _check_webhook_secret(secret: str | None) -> None:
 
 async def _find_staff_by_telegram(db: AsyncSession, telegram_id: str) -> Staff | None:
     return await db.scalar(select(Staff).where(Staff.telegram_id == telegram_id))
+
+
+async def _first_event(db: AsyncSession) -> Event | None:
+    return await db.scalar(select(Event).order_by(Event.id.asc()).limit(1))
+
+
+def _telegram_sender_name(sender: dict[str, Any]) -> str:
+    username = str(sender.get("username") or "").strip()
+    first_name = str(sender.get("first_name") or "").strip()
+    last_name = str(sender.get("last_name") or "").strip()
+    full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+    return full_name or (f"@{username}" if username else "Telegram User")
+
+
+async def _register_start_user(db: AsyncSession, sender: dict[str, Any]) -> Staff | None:
+    telegram_id = sender.get("id")
+    if telegram_id is None:
+        return None
+
+    staff = await _find_staff_by_telegram(db, str(telegram_id))
+    username = str(sender.get("username") or "").strip() or None
+    name = _telegram_sender_name(sender)
+    if staff is not None:
+        staff.telegram_username = username or staff.telegram_username
+        if staff.name == "Telegram User" and name != "Telegram User":
+            staff.name = name
+        await db.commit()
+        await db.refresh(staff)
+        return staff
+
+    event = await _first_event(db)
+    if event is None:
+        return None
+
+    staff = Staff(
+        event_id=event.id,
+        name=name,
+        telegram_id=str(telegram_id),
+        telegram_username=username,
+    )
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+    logger.info("Telegram /start registered staff_id=%s event_id=%s telegram_id=%s", staff.id, event.id, telegram_id)
+    return staff
 
 
 async def _store_incoming_message(db: AsyncSession, staff: Staff, text: str) -> Message:
@@ -385,6 +430,26 @@ async def telegram_webhook(
     telegram_id = sender.get("id")
 
     if (not text and not voice and not document and not photo) or telegram_id is None:
+        return {"ok": True}
+
+    text_parts = str(text or "").strip().split(maxsplit=1)
+    if text_parts and text_parts[0].lower() == "/start":
+        staff = await _register_start_user(db, sender)
+        chat_id = chat.get("id") or telegram_id
+        if staff is None:
+            await enqueue_notification(
+                {
+                    "telegram_id": str(chat_id),
+                    "message": "Пока нет мероприятия, к которому можно привязать Telegram.",
+                }
+            )
+            return {"ok": True}
+        await enqueue_notification(
+            {
+                "telegram_id": str(chat_id),
+                "message": f"Готово, добавила вас в мероприятие как участника: {staff.name}.",
+            }
+        )
         return {"ok": True}
 
     staff = await _find_staff_by_telegram(db, str(telegram_id))

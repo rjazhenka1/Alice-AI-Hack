@@ -483,6 +483,65 @@ async def test_ticket_summary_query_uses_tickets_not_knowledge(db_session: Async
 
 
 @pytest.mark.asyncio
+async def test_chat_mode_operational_command_explains_no_task_creation(db_session: AsyncSession):
+    event_id, _, worker_id = await _seed_event_with_staff(db_session)
+    worker = await _get_staff(db_session, worker_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Создай задачу принести удлинители", mode="chat"),
+        db=db_session,
+        current_staff=worker,
+    )
+
+    assert response.action == "question_asked"
+    assert "операционную команду" in response.message
+    assert "базе знаний" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_task_command_mode_never_returns_kb_fallback_for_task_creation(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(
+            text="Создай задачу: проверить дисциплину Компьютерное зрение",
+            mode="task_command",
+        ),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "ticket_created"
+    assert response.ticket is not None
+    assert "Не нашла точный ответ" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_task_command_mode_clarifies_non_task_text(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(
+            text="Есть ли в базе знаний дисциплина Компьютерное зрение?",
+            mode="task_command",
+        ),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "question_asked"
+    assert response.ticket is None
+    assert "Уточните задачу" in response.message
+    assert "экран создания задач" not in response.message
+    assert "Не нашла точный ответ" not in response.message
+
+
+@pytest.mark.asyncio
 async def test_assignee_resolution_matches_cyrillic_first_name_to_latin_staff(db_session: AsyncSession):
     event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
     coordinator = await _get_staff(db_session, coordinator_id)

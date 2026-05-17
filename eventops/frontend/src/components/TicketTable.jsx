@@ -252,7 +252,7 @@ export default function TicketTable({
         });
         setQuestionAnswers((items) => ({
           ...items,
-          [ticket.id]: answer || "Передала вопрос администратору.",
+          [ticket.id]: answer || "Вопрос сохранён в обсуждении.",
         }));
         setOpenThreadTicketId(ticket.id);
       };
@@ -288,7 +288,7 @@ export default function TicketTable({
     const answer = await onQuestion(ticket, content);
     setQuestionAnswers((items) => ({
       ...items,
-      [ticket.id]: answer || "Передала вопрос администратору.",
+      [ticket.id]: answer || "Вопрос сохранён в обсуждении.",
     }));
     setQuestions((items) => ({ ...items, [ticket.id]: "" }));
     setOpenQuestionTicketId(null);
