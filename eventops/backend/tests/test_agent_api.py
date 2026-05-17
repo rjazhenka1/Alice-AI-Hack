@@ -58,6 +58,8 @@ async def setup_alice_env():
             )
         if "компьютерное зрение" in lowered:
             return PlannedCommand(kind="knowledge_base", message="Ищу в базе знаний", keywords=["Компьютерное зрение"])
+        if "технический комитет" in lowered:
+            return PlannedCommand(kind="operational", message="Ок", title="Принести удлинители", description=text, assignees=["Технический комитет"])
         if "анну" in lowered:
             return PlannedCommand(kind="operational", message="Ок", title="Поставить на вход", description=text, assignees=["Анну"])
         if "ну ты поняла" in lowered:
@@ -425,3 +427,27 @@ async def test_assignee_resolution_matches_cyrillic_first_name_to_latin_staff(db
 
     assert response.ticket is not None
     assert response.ticket.target["staff_ids"] == [2]
+
+
+@pytest.mark.asyncio
+async def test_assignee_resolution_uses_role_description_rag(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    role = Role(
+        event_id=event_id,
+        name="Техкомитет",
+        description="Техническая поддержка площадки",
+        ai_prompt="Отвечает за оборудование, интернет, проектор, звук и технические неисправности.",
+    )
+    db_session.add(role)
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Технический комитет, принесите удлинители"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert response.ticket.target["role_ids"] == [role.id]
