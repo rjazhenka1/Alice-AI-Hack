@@ -344,6 +344,65 @@ async def test_upload_knowledge_document(
     assert search_response.json()[0]["source_title"] == "Регламент"
 
 
+async def test_admin_can_broadcast_to_all_role_or_staff(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch,
+):
+    event = await seed_event(db_session)
+    registration = await seed_role(db_session, event.id, "Регистрация")
+    admin = await seed_staff(db_session, event.id, name="Admin", telegram_id="100", is_admin=True)
+    anna = await seed_staff(db_session, event.id, name="Anna", telegram_id="101", role_id=registration.id)
+    max_staff = await seed_staff(db_session, event.id, name="Max", telegram_id="102")
+    no_telegram = await seed_staff(db_session, event.id, name="No Telegram")
+    await db_session.commit()
+
+    queued_notifications: list[dict] = []
+
+    async def fake_enqueue(payload: dict):
+        queued_notifications.append(payload)
+
+    monkeypatch.setattr("app.api.messages.enqueue_notification", fake_enqueue)
+
+    forbidden = await client.post(
+        f"/events/{event.id}/messages/broadcast",
+        json={"message": "Нельзя", "target": "all"},
+        headers=auth_headers(anna),
+    )
+    assert forbidden.status_code == 403
+
+    all_response = await client.post(
+        f"/events/{event.id}/messages/broadcast",
+        json={"message": "Сбор у штаба", "target": "all"},
+        headers=auth_headers(admin),
+    )
+    assert all_response.status_code == 200
+    assert all_response.json()["queued_count"] == 2
+    assert all_response.json()["target_staff_ids"] == [anna.id, max_staff.id, no_telegram.id]
+    assert all_response.json()["skipped_without_telegram_ids"] == [no_telegram.id]
+    assert [item["telegram_id"] for item in queued_notifications] == ["101", "102"]
+
+    queued_notifications.clear()
+    role_response = await client.post(
+        f"/events/{event.id}/messages/broadcast",
+        json={"message": "Регистрация, к входу", "target": "role", "role_id": registration.id},
+        headers=auth_headers(admin),
+    )
+    assert role_response.status_code == 200
+    assert role_response.json()["target_staff_ids"] == [anna.id]
+    assert [item["telegram_id"] for item in queued_notifications] == ["101"]
+
+    queued_notifications.clear()
+    staff_response = await client.post(
+        f"/events/{event.id}/messages/broadcast",
+        json={"message": "Макс, проверь звук", "target": "staff", "staff_ids": [max_staff.id]},
+        headers=auth_headers(admin),
+    )
+    assert staff_response.status_code == 200
+    assert staff_response.json()["target_staff_ids"] == [max_staff.id]
+    assert queued_notifications[0]["message"] == "Admin: Макс, проверь звук"
+
+
 async def test_telegram_webhook_text_saves_message_and_queues_reply(
     client: AsyncClient,
     db_session: AsyncSession,

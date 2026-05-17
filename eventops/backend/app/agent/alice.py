@@ -525,6 +525,16 @@ class AlicePlanner:
                 message="Уточни, пожалуйста: сколько людей нужно и на какое время?",
             )
 
+        if self._is_broadcast_request(lowered):
+            message = self._extract_broadcast_message(normalized)
+            return PlannedCommand(
+                kind="operational",
+                target="broadcast",
+                message=f"Отправлю сообщение: «{message}».",
+                description=message,
+                assignees=self._extract_broadcast_assignees(normalized),
+            )
+
         if self._is_info_request(lowered):
             return PlannedCommand(
                 kind="informational",
@@ -563,6 +573,42 @@ class AlicePlanner:
             "что по",
         )
         return any(t in lowered for t in triggers)
+
+    @staticmethod
+    def _is_broadcast_request(lowered: str) -> bool:
+        action_words = ("напиши", "сообщи", "отправь", "разошли", "рассыл")
+        target_words = ("всем", "всех", "участник", "волонтер", "волонтёр", "команде", "роли")
+        return any(word in lowered for word in action_words) and (":" in lowered or any(word in lowered for word in target_words))
+
+    @staticmethod
+    def _is_all_broadcast(lowered: str) -> bool:
+        return any(word in lowered for word in ("всем", "всех", "участникам", "волонтерам", "волонтёрам", "команде"))
+
+    @staticmethod
+    def _extract_broadcast_message(text: str) -> str:
+        if ":" in text:
+            return text.split(":", maxsplit=1)[1].strip() or text.strip()
+
+        cleaned = re.sub(
+            r"^(напиши|сообщи|отправь|разошли)\s+(всем|всех|участникам|волонтерам|волонтёрам|команде)\s*",
+            "",
+            text.strip(),
+            flags=re.IGNORECASE,
+        ).strip()
+        return cleaned or text.strip()
+
+    @staticmethod
+    def _extract_broadcast_assignees(text: str) -> str | list[str] | None:
+        lowered = text.lower()
+        if AlicePlanner._is_all_broadcast(lowered):
+            return "all"
+        if ":" not in text:
+            return None
+
+        raw_target = text.split(":", maxsplit=1)[0]
+        cleaned = re.sub(r"^(напиши|сообщи|отправь|разошли)\s+", "", raw_target, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"^(роли|роль|для|в)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+        return [cleaned] if cleaned else None
 
     @staticmethod
     def _is_knowledge_request(lowered: str) -> bool:
@@ -657,7 +703,7 @@ class AlicePlanner:
         request_prompt = (
             "Верни только JSON без markdown в формате "
             '{"kind":"operational|clarification|informational|knowledge_base|answered",'
-            '"target":"create|respond|change_status|null","title":"...|null","description":"...|null",'
+            '"target":"create|respond|change_status|broadcast|null","title":"...|null","description":"...|null",'
             '"assignees":"all|[... ]|null","id":"int|null","status":"...|null",'
             '"keywords":"[...]|null","answer":"...|null","text":"..."}. '
             "text должен быть конкретным и полезным: 2-4 коротких предложения, "

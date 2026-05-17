@@ -48,8 +48,18 @@ async def setup_alice_env():
             return PlannedCommand(kind="imprecise", message="Формулировка расплывчата")
         if "что происходит" in lowered or "что сейчас" in lowered:
             return PlannedCommand(kind="informational", message="Собираю сводку")
+        if "напиши всем" in lowered:
+            return PlannedCommand(
+                kind="operational",
+                target="broadcast",
+                message="Отправлю всем",
+                description="Сбор у штаба через 10 минут",
+                assignees="all",
+            )
         if "компьютерное зрение" in lowered:
             return PlannedCommand(kind="knowledge_base", message="Ищу в базе знаний", keywords=["Компьютерное зрение"])
+        if "технический комитет" in lowered:
+            return PlannedCommand(kind="operational", message="Ок", title="Принести удлинители", description=text, assignees=["Технический комитет"])
         if "анну" in lowered:
             return PlannedCommand(kind="operational", message="Ок", title="Поставить на вход", description=text, assignees=["Анну"])
         if "ну ты поняла" in lowered:
@@ -104,7 +114,7 @@ async def test_command_audio_transcribes_and_runs_regular_flow(db_session: Async
     event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
     coordinator = await _get_staff(db_session, coordinator_id)
 
-    async def fake_transcribe(self, *, audio_base64: str, language: str = "ru-RU") -> str:
+    async def fake_transcribe(self, *, audio_base64: str, audio_mime_type: str | None = None, language: str = "ru-RU") -> str:
         return "На входе толпа, срочно помогите"
 
     from app.agent.alice import SpeechKitClient
@@ -164,6 +174,42 @@ async def test_command_creates_ticket_on_operational_text(db_session: AsyncSessi
     assert isinstance(response.ticket.target["staff_ids"], list)
     assert response.ticket.target["staff_ids"] == []
     assert response.ticket.target["role_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_command_broadcasts_without_creating_ticket(db_session: AsyncSession, monkeypatch):
+    event_id, coordinator_id, worker_id = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    worker = await _get_staff(db_session, worker_id)
+    coordinator.telegram_id = "100"
+    worker.telegram_id = "101"
+    await db_session.commit()
+
+    queued_notifications: list[dict] = []
+
+    async def fake_enqueue(payload: dict):
+        queued_notifications.append(payload)
+
+    monkeypatch.setattr("app.notifier.enqueue_notification", fake_enqueue)
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Напиши всем: сбор у штаба через 10 минут"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.action == "answered"
+    assert "Telegram-очередь: 1" in response.message
+    assert queued_notifications == [
+        {"telegram_id": "101", "message": "Coordinator: Сбор у штаба через 10 минут"}
+    ]
+
+    tickets = list((await db_session.scalars(select(Ticket))).all())
+    assert tickets == []
+    messages = list((await db_session.scalars(select(Message))).all())
+    assert len(messages) == 1
+    assert messages[0].content == "Сбор у штаба через 10 минут"
 
 
 @pytest.mark.asyncio
@@ -381,3 +427,27 @@ async def test_assignee_resolution_matches_cyrillic_first_name_to_latin_staff(db
 
     assert response.ticket is not None
     assert response.ticket.target["staff_ids"] == [2]
+
+
+@pytest.mark.asyncio
+async def test_assignee_resolution_uses_role_description_rag(db_session: AsyncSession):
+    event_id, coordinator_id, _ = await _seed_event_with_staff(db_session)
+    coordinator = await _get_staff(db_session, coordinator_id)
+    role = Role(
+        event_id=event_id,
+        name="Техкомитет",
+        description="Техническая поддержка площадки",
+        ai_prompt="Отвечает за оборудование, интернет, проектор, звук и технические неисправности.",
+    )
+    db_session.add(role)
+    await db_session.commit()
+
+    response = await agent_command(
+        event_id=event_id,
+        payload=AgentCommandRequest(text="Технический комитет, принесите удлинители"),
+        db=db_session,
+        current_staff=coordinator,
+    )
+
+    assert response.ticket is not None
+    assert response.ticket.target["role_ids"] == [role.id]

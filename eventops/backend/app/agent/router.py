@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from sqlalchemy import and_, false, or_, select, true
@@ -18,6 +19,7 @@ from ..models import (
     ConfidentialityRule,
     Event,
     KnowledgeBaseLink,
+    Message,
     Role,
     Staff,
     StaffStatus,
@@ -205,6 +207,91 @@ def _entity_matches_name(query: str, name: str) -> bool:
     )
 
 
+def _candidate_tokens(value: str) -> set[str]:
+    return set(_entity_tokens(value))
+
+
+def _token_prefix_match(query_token: str, candidate_tokens: set[str]) -> bool:
+    return any(token.startswith(query_token) or query_token.startswith(token) for token in candidate_tokens)
+
+
+def _rag_score_entity(query: str, *, primary: str, text: str) -> float:
+    normalized_query = _normalize_entity_text(query)
+    normalized_primary = _normalize_entity_text(primary)
+    normalized_text = _normalize_entity_text(text)
+    if not normalized_query or not normalized_text:
+        return 0.0
+
+    query_tokens = _entity_tokens(query)
+    primary_tokens = _candidate_tokens(primary)
+    text_tokens = _candidate_tokens(text)
+    score = 0.0
+
+    if normalized_query == normalized_primary:
+        score += 100.0
+    elif normalized_query in normalized_primary or normalized_primary in normalized_query:
+        score += 88.0
+
+    if query_tokens:
+        primary_hits = sum(1 for token in query_tokens if _token_prefix_match(token, primary_tokens))
+        text_hits = sum(1 for token in query_tokens if _token_prefix_match(token, text_tokens))
+        score += 55.0 * (primary_hits / len(query_tokens))
+        score += 30.0 * (text_hits / len(query_tokens))
+        if primary_hits == len(query_tokens):
+            score += 25.0
+        elif text_hits == len(query_tokens):
+            score += 12.0
+
+    score += 45.0 * SequenceMatcher(None, normalized_query, normalized_primary).ratio()
+    score += 20.0 * SequenceMatcher(None, normalized_query, normalized_text).ratio()
+    return score
+
+
+def _candidate_is_ambiguous(candidates: list[tuple[Any, float]]) -> bool:
+    if len(candidates) < 2:
+        return False
+    best = candidates[0][1]
+    second = candidates[1][1]
+    return best < second + 12.0
+
+
+async def _search_role_candidates(db: AsyncSession, *, event_id: int, query: str) -> list[tuple[Role, float]]:
+    result = await db.scalars(select(Role).where(Role.event_id == event_id).order_by(Role.id.asc()))
+    candidates: list[tuple[Role, float]] = []
+    for role in result.all():
+        text = " ".join(part for part in [role.name, role.description or "", role.ai_prompt or ""] if part)
+        score = _rag_score_entity(query, primary=role.name, text=text)
+        if score >= 45.0:
+            candidates.append((role, score))
+    return sorted(candidates, key=lambda item: item[1], reverse=True)
+
+
+async def _search_staff_candidates(db: AsyncSession, *, event_id: int, query: str) -> list[tuple[Staff, float]]:
+    result = await db.scalars(
+        select(Staff)
+        .options(selectinload(Staff.role), selectinload(Staff.zone))
+        .where(Staff.event_id == event_id)
+        .order_by(Staff.id.asc())
+    )
+    candidates: list[tuple[Staff, float]] = []
+    for staff in result.all():
+        role_name = staff.role.name if staff.role else ""
+        zone_name = staff.zone.name if staff.zone else ""
+        text = " ".join(
+            part
+            for part in [staff.name, staff.telegram_username or "", role_name, zone_name, staff.status.value if staff.status else ""]
+            if part
+        )
+        score = _rag_score_entity(query, primary=staff.name, text=text)
+        if staff.telegram_username and _entity_matches_name(query, staff.telegram_username):
+            score += 35.0
+        if _entity_matches_name(query, staff.name):
+            score += 45.0
+        if score >= 45.0:
+            candidates.append((staff, score))
+    return sorted(candidates, key=lambda item: item[1], reverse=True)
+
+
 def _chunk_matches_query(chunk: dict[str, Any], query: str) -> bool:
     terms = _query_terms(query)
     if not terms:
@@ -282,6 +369,8 @@ def _is_ticket_summary_query(text: str) -> bool:
 
 def _infer_ticket_priority(text: str) -> TicketPriority:
     lowered = (text or "").lower()
+    if re.search(r"\bне\s+срочно\b", lowered):
+        return TicketPriority.low
     if any(marker in lowered for marker in ("критично", "критическая", "критический", "пожар", "немедленно", "прямо сейчас")):
         return TicketPriority.critical
     if any(marker in lowered for marker in ("срочно", "urgent", "asap", "как можно быстрее", "быстро")):
@@ -578,45 +667,48 @@ async def _resolve_assignees_with_rag(
     event_id: int,
     assignees: list[str],
 ) -> tuple[list[int], list[int]] | None:
-    """Resolve assignee names -> (role_ids, staff_ids).
-
-    Non-informational flow uses people+roles RAG (and optional KB context) by contract.
-    Concrete RAG API is intentionally left as pseudocode until integration is finalized.
-    """
+    """Resolve assignee names -> (role_ids, staff_ids) via role/person retrieval."""
     role_ids: list[int] = []
     staff_ids: list[int] = []
-    unresolved: list[str] = []
 
     for entity in assignees:
         raw = (entity or "").strip()
         if not raw:
             continue
 
-        role_match = await db.scalar(
-            select(Role).where(Role.event_id == event_id, Role.name.ilike(raw))
-        )
-        if role_match is not None:
-            role_ids.append(int(role_match.id))
+        role_candidates = await _search_role_candidates(db, event_id=event_id, query=raw)
+        staff_candidates = await _search_staff_candidates(db, event_id=event_id, query=raw)
+        best_role = role_candidates[0] if role_candidates else None
+        best_staff = staff_candidates[0] if staff_candidates else None
+
+        if best_role is None and best_staff is None:
+            return None
+
+        if best_role is not None and best_staff is not None:
+            role_score = best_role[1]
+            staff_score = best_staff[1]
+            if abs(role_score - staff_score) < 10.0:
+                return None
+            if role_score > staff_score:
+                if _candidate_is_ambiguous(role_candidates):
+                    return None
+                role_ids.append(int(best_role[0].id))
+            else:
+                if _candidate_is_ambiguous(staff_candidates):
+                    return None
+                staff_ids.append(int(best_staff[0].id))
             continue
 
-        staff_result = await db.execute(select(Staff).where(Staff.event_id == event_id).order_by(Staff.id.asc()))
-        staff_matches = [staff for staff in staff_result.scalars().all() if _entity_matches_staff(raw, staff)]
-        if len(staff_matches) == 1:
-            staff_ids.append(int(staff_matches[0].id))
+        if best_role is not None:
+            if _candidate_is_ambiguous(role_candidates):
+                return None
+            role_ids.append(int(best_role[0].id))
             continue
 
-        unresolved.append(raw)
-
-    if unresolved:
-        # PSEUDOCODE (non-informational RAG):
-        # people_candidates = [rag.search_people(query=name) for name in unresolved]
-        # role_candidates = [rag.search_roles(query=name) for name in unresolved]
-        # kb_hints = rag.search_docs(keywords=unresolved)  # optional contextual hints
-        # selected_ids = llm_verify_entity_ids(input_names=unresolved, candidates=rag_candidates)
-        # if selected_ids is None:
-        #     return None
-        # staff_ids.extend(selected_ids)
-        return None
+        if best_staff is not None:
+            if _candidate_is_ambiguous(staff_candidates):
+                return None
+            staff_ids.append(int(best_staff[0].id))
 
     return list(dict.fromkeys(role_ids)), list(dict.fromkeys(staff_ids))
 
@@ -653,6 +745,100 @@ def _extract_completion_query(text: str) -> str | None:
     tail = cleaned[len("я сделал") :].strip(" .,!?")
     tail = re.sub(r"^задачу\s*", "", tail)
     return tail or ""
+
+
+async def _resolve_broadcast_targets(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    sender: Staff,
+    assignees: str | list[str] | None,
+) -> tuple[list[Staff], str]:
+    if isinstance(assignees, str) and assignees.strip().lower() == "all":
+        result = await db.scalars(select(Staff).where(Staff.event_id == event_id).order_by(Staff.id.asc()))
+        return [staff for staff in result.all() if staff.id != sender.id], "all"
+
+    if isinstance(assignees, list) and assignees:
+        resolved = await _resolve_assignees_with_rag(db, event_id=event_id, assignees=assignees)
+        if resolved is None:
+            return [], "unresolved"
+
+        role_ids, staff_ids = resolved
+        clauses = []
+        if role_ids:
+            clauses.append(Staff.role_id.in_(role_ids))
+        if staff_ids:
+            clauses.append(Staff.id.in_(staff_ids))
+        if not clauses:
+            return [], "empty"
+
+        result = await db.scalars(
+            select(Staff)
+            .where(Staff.event_id == event_id, or_(*clauses))
+            .order_by(Staff.id.asc())
+        )
+        return [staff for staff in result.all() if staff.id != sender.id], "targeted"
+
+    return [], "empty"
+
+
+async def _send_agent_broadcast(
+    db: AsyncSession,
+    *,
+    event_id: int,
+    sender: Staff,
+    assignees: str | list[str] | None,
+    content: str,
+) -> tuple[int, list[int], list[int], list[int]]:
+    targets, target_kind = await _resolve_broadcast_targets(
+        db,
+        event_id=event_id,
+        sender=sender,
+        assignees=assignees,
+    )
+    if target_kind == "unresolved":
+        return -1, [], [], []
+    if not targets:
+        return 0, [], [], []
+
+    if target_kind == "all":
+        message_rows = [
+            Message(
+                event_id=event_id,
+                from_staff_id=sender.id,
+                content=content,
+                visibility=Visibility.public,
+            )
+        ]
+    else:
+        message_rows = [
+            Message(
+                event_id=event_id,
+                from_staff_id=sender.id,
+                to_staff_id=target.id,
+                content=content,
+                visibility=Visibility.confidential,
+            )
+            for target in targets
+        ]
+
+    db.add_all(message_rows)
+    await db.flush()
+
+    skipped = [staff.id for staff in targets if not staff.telegram_id]
+    deliverable = [staff for staff in targets if staff.telegram_id]
+    notification_text = f"{sender.name}: {content}"
+    from ..notifier import enqueue_notification
+
+    for staff in deliverable:
+        await enqueue_notification({"telegram_id": staff.telegram_id, "message": notification_text})
+
+    return (
+        len(deliverable),
+        [staff.id for staff in targets],
+        skipped,
+        [int(message.id) for message in message_rows if message.id is not None],
+    )
 
 
 def _finalize_response(response: AgentCommandResponse) -> AgentCommandResponse:
@@ -888,7 +1074,56 @@ async def handle_command(
     else:
         operational_target = (planned.target or "create").strip().lower()
 
-        if operational_target == "change_status":
+        if operational_target == "broadcast":
+            broadcast_text = (planned.description or planned.message or "").strip()
+            if not broadcast_text:
+                response = AgentCommandResponse(
+                    action="question_asked",
+                    message="Уточни текст сообщения для рассылки.",
+                    model_response="Уточни текст сообщения для рассылки.",
+                    author=response_author,
+                    author_role=response_author_role,
+                )
+            else:
+                queued_count, target_staff_ids, skipped_without_telegram_ids, _ = await _send_agent_broadcast(
+                    db,
+                    event_id=event_id,
+                    sender=current_staff,
+                    assignees=planned.assignees,
+                    content=broadcast_text,
+                )
+                if queued_count < 0:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Не смог однозначно определить получателей рассылки. Уточни: всем, конкретной роли или конкретным людям?",
+                        model_response="Не смог однозначно определить получателей рассылки. Уточни: всем, конкретной роли или конкретным людям?",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                elif not target_staff_ids:
+                    response = AgentCommandResponse(
+                        action="question_asked",
+                        message="Не нашла получателей для рассылки.",
+                        model_response="Не нашла получателей для рассылки.",
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+                else:
+                    skipped_tail = (
+                        f" Без telegram_id: {len(skipped_without_telegram_ids)}."
+                        if skipped_without_telegram_ids
+                        else ""
+                    )
+                    answer = f"Отправила сообщение в web-чат и поставила в Telegram-очередь: {queued_count}.{skipped_tail}"
+                    response = AgentCommandResponse(
+                        action="answered",
+                        message=answer,
+                        model_response=answer,
+                        author=response_author,
+                        author_role=response_author_role,
+                    )
+
+        elif operational_target == "change_status":
             if planned.ticket_id is None:
                 response = AgentCommandResponse(
                     action="question_asked",
